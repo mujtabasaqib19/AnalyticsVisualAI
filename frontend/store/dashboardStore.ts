@@ -1,0 +1,269 @@
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
+import type { ParsedData } from "@/lib/parser";
+import type { GeminiValidationResult } from "@/lib/gemini";
+import type { DashboardTheme } from "@/app/api/theme/route";
+
+export type { DashboardTheme };
+
+export type ChartType =
+  | "bar" | "line" | "area" | "pie" | "donut"
+  | "scatter" | "kpi_card" | "table" | "funnel" | "gauge";
+
+export interface ChartSpec {
+  id: string;
+  type: ChartType;
+  title: string;
+  x_field?: string;
+  y_field?: string;
+  value_field?: string;
+  aggregation?: "sum" | "avg" | "count" | "max" | "min";
+  color?: string;
+  position: { x: number; y: number; w: number; h: number };
+  filters?: Record<string, unknown>;
+}
+
+export interface DashboardSpec {
+  dashboard_title: string;
+  theme: string;
+  layout: string;
+  charts: ChartSpec[];
+  suggested_insights?: string[];
+}
+
+export type GenerationStatus = "idle" | "parsing" | "validating" | "generating" | "ready" | "error";
+
+// We persist parsedData but cap rows so we stay well under the
+// localStorage 5 MB limit. Charts use this sample for rendering.
+const PERSIST_ROWS_LIMIT = 2_000;
+
+function slimParsedData(pd: ParsedData | null): ParsedData | null {
+  if (!pd) return null;
+  return { ...pd, rows: pd.rows.slice(0, PERSIST_ROWS_LIMIT) };
+}
+
+interface DashboardState {
+  parsedDataArray: ParsedData[];
+  selectedFileIndex: number;
+  parsedData: ParsedData | null;
+  addParsedData: (data: ParsedData) => void;
+  removeFileByIndex: (index: number) => void;
+  setSelectedFileIndex: (index: number) => void;
+  clearAllFiles: () => void;
+  /** Replace the currently selected file's data (used after EDA to swap in cleaned rows) */
+  replaceCurrentParsedData: (data: ParsedData) => void;
+  /** Backward-compat alias used by upload page */
+  setParsedData: (data: ParsedData | null) => void;
+
+  dashboardSpec: DashboardSpec | null;
+  setDashboardSpec: (spec: DashboardSpec | null) => void;
+
+  validation: GeminiValidationResult | null;
+  setValidation: (v: GeminiValidationResult | null) => void;
+
+  status: GenerationStatus;
+  setStatus: (s: GenerationStatus) => void;
+  errorMessage: string | null;
+  setErrorMessage: (msg: string | null) => void;
+
+  userQuery: string;
+  setUserQuery: (q: string) => void;
+  dashboardType: string;
+  setDashboardType: (t: string) => void;
+
+  selectedChartId: string | null;
+  setSelectedChartId: (id: string | null) => void;
+  updateChart: (id: string, updates: Partial<ChartSpec>) => void;
+  removeChart: (id: string) => void;
+
+  updateChartPosition: (id: string, position: ChartSpec["position"]) => void;
+
+  // Active colour theme (Claude-generated, Gemini-audited)
+  activeTheme: DashboardTheme | null;
+  setActiveTheme: (t: DashboardTheme | null) => void;
+
+  reset: () => void;
+}
+
+const computeParsedData = (state: {
+  parsedDataArray: ParsedData[];
+  selectedFileIndex: number;
+}): ParsedData | null =>
+  state.selectedFileIndex >= 0 && state.selectedFileIndex < state.parsedDataArray.length
+    ? state.parsedDataArray[state.selectedFileIndex]
+    : null;
+
+export const useDashboardStore = create<DashboardState>()(
+  persist(
+    (set, get) => ({
+      parsedDataArray: [],
+      selectedFileIndex: -1,
+      parsedData: null,
+
+      addParsedData: (data) =>
+        set((state) => {
+          const newArray = [...state.parsedDataArray, data];
+          return {
+            parsedDataArray: newArray,
+            selectedFileIndex: newArray.length - 1,
+            parsedData: data,
+          };
+        }),
+
+      removeFileByIndex: (index) =>
+        set((state) => {
+          const newArray = state.parsedDataArray.filter((_, i) => i !== index);
+          let newIndex = state.selectedFileIndex;
+          if (newIndex === index) {
+            newIndex = newArray.length > 0 ? Math.min(index, newArray.length - 1) : -1;
+          } else if (newIndex > index) {
+            newIndex--;
+          }
+          const newParsedData = computeParsedData({
+            parsedDataArray: newArray,
+            selectedFileIndex: newIndex,
+          });
+          return { parsedDataArray: newArray, selectedFileIndex: newIndex, parsedData: newParsedData };
+        }),
+
+      setSelectedFileIndex: (index) =>
+        set((state) => {
+          const newParsedData = computeParsedData({
+            parsedDataArray: state.parsedDataArray,
+            selectedFileIndex: index,
+          });
+          return { selectedFileIndex: index, parsedData: newParsedData };
+        }),
+
+      clearAllFiles: () =>
+        set({ parsedDataArray: [], selectedFileIndex: -1, parsedData: null }),
+
+      replaceCurrentParsedData: (data) =>
+        set((state) => {
+          const idx = state.selectedFileIndex;
+          if (idx < 0 || idx >= state.parsedDataArray.length) return {};
+          const newArray = [...state.parsedDataArray];
+          newArray[idx] = data;
+          return { parsedDataArray: newArray, parsedData: data };
+        }),
+
+      // Alias used by the upload page for single-file mode
+      setParsedData: (data) => {
+        if (!data) {
+          get().clearAllFiles();
+          return;
+        }
+        // Check if file already in array (by name + rowCount)
+        const existing = get().parsedDataArray.findIndex(
+          (p) => p.fileName === data.fileName && p.rowCount === data.rowCount
+        );
+        if (existing >= 0) {
+          get().setSelectedFileIndex(existing);
+        } else {
+          get().addParsedData(data);
+        }
+      },
+
+      dashboardSpec: null,
+      setDashboardSpec: (spec) => set({ dashboardSpec: spec }),
+
+      validation: null,
+      setValidation: (v) => set({ validation: v }),
+
+      status: "idle",
+      setStatus: (s) => set({ status: s }),
+      errorMessage: null,
+      setErrorMessage: (msg) => set({ errorMessage: msg }),
+
+      userQuery: "",
+      setUserQuery: (q) => set({ userQuery: q }),
+      dashboardType: "auto",
+      setDashboardType: (t) => set({ dashboardType: t }),
+
+      activeTheme: null,
+      setActiveTheme: (t) => set({ activeTheme: t }),
+
+      selectedChartId: null,
+      setSelectedChartId: (id) => set({ selectedChartId: id }),
+
+      updateChart: (id, updates) =>
+        set((state) => {
+          if (!state.dashboardSpec) return {};
+          return {
+            dashboardSpec: {
+              ...state.dashboardSpec,
+              charts: state.dashboardSpec.charts.map((c) =>
+                c.id === id ? { ...c, ...updates } : c
+              ),
+            },
+          };
+        }),
+
+      removeChart: (id) =>
+        set((state) => {
+          if (!state.dashboardSpec) return {};
+          return {
+            dashboardSpec: {
+              ...state.dashboardSpec,
+              charts: state.dashboardSpec.charts.filter((c) => c.id !== id),
+            },
+          };
+        }),
+
+      updateChartPosition: (id, position) =>
+        set((state) => {
+          if (!state.dashboardSpec) return {};
+          return {
+            dashboardSpec: {
+              ...state.dashboardSpec,
+              charts: state.dashboardSpec.charts.map((c) =>
+                c.id === id ? { ...c, position } : c
+              ),
+            },
+          };
+        }),
+
+      reset: () =>
+        set({
+          parsedDataArray: [],
+          selectedFileIndex: -1,
+          parsedData: null,
+          dashboardSpec: null,
+          validation: null,
+          status: "idle",
+          errorMessage: null,
+          userQuery: "",
+          dashboardType: "auto",
+          selectedChartId: null,
+          activeTheme: null,
+        }),
+    }),
+    {
+      name: "analyticsvisualai-v2",      // bumped name clears stale v1 cache
+      storage: createJSONStorage(() => localStorage),
+
+      // ── What we persist ───────────────────────────────────────────────────
+      // • dashboardSpec  — the full chart definitions (small JSON)
+      // • userQuery / dashboardType — needed to re-generate if user asks
+      // • validation     — Gemini score badge
+      // • parsedData     — schema + first 2 000 rows (keeps us under 5 MB)
+      // • status         — persisted as "ready" whenever a spec exists so the
+      //                    dashboard page knows not to re-trigger generation
+      partialize: (s) => ({
+        dashboardSpec:    s.dashboardSpec,
+        validation:       s.validation,
+        userQuery:        s.userQuery,
+        dashboardType:    s.dashboardType,
+        selectedFileIndex: s.selectedFileIndex,
+        activeTheme:      s.activeTheme,
+        // Slim rows to stay under localStorage limit
+        parsedData: slimParsedData(s.parsedData),
+        parsedDataArray:  s.parsedDataArray.map(slimParsedData).filter(Boolean) as ParsedData[],
+        // Always restore as "ready" if a spec exists — prevents auto re-generation
+        status: s.dashboardSpec ? "ready" : "idle",
+      }),
+
+      version: 2,
+    }
+  )
+);

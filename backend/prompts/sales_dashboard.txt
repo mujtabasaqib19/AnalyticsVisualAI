@@ -1,0 +1,28 @@
+SALES DASHBOARD DOMAIN CONTEXT
+
+Focus areas for sales data analysis:
+- Revenue, GMV, ARR, MRR, net revenue metrics
+- Sales pipeline: leads, opportunities, conversions, win rate
+- Regional and territory performance breakdowns
+- Product/SKU/category revenue contributions
+- Time-based trends: daily, weekly, monthly, quarterly, annual
+- Sales rep performance and quota attainment
+- Average deal size, cycle length, close rate
+- Churn rate and customer retention metrics
+
+Preferred chart types for sales:
+- KPI cards for: Total Revenue, Total Units Sold, Avg Deal Size, Win Rate %
+- Bar charts for: Revenue by Region, Revenue by Product, Sales Rep Performance
+- Line charts for: Monthly/Quarterly Revenue Trend, MoM Growth
+- Pie/Donut charts for: Revenue by Category, Channel Mix
+- Funnel charts for: Sales Pipeline (Leads → Qualified → Proposal → Closed)
+
+When column names are ambiguous, prefer mapping:
+- revenue/sales/amount → numeric metric (y_field)
+- region/territory/location → dimension (x_field)
+- date/month/quarter/period → time dimension (x_field)
+- product/item/sku/category → categorical dimension (x_field)
+- rep/agent/owner → person dimension
+
+Always include at least one KPI card and one trend line chart in sales dashboards.
+Color guidance: Use #0ea5e9 (blue) for primary metrics, #10b981 (green) for positive trend indicators.

@@ -1,0 +1,175 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Serif+Display:ital@0;1&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light / White Theme */
+    --background: 0 0% 99%;
+    --foreground: 220 15% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 15% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 15% 15%;
+
+    --primary: 215 85% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 220 15% 30%;
+
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 15% 52%;
+
+    --accent: 215 85% 96%;
+    --accent-foreground: 215 85% 40%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 20% 90%;
+    --input: 215 20% 93%;
+    --ring: 215 85% 50%;
+    --radius: 0.75rem;
+
+    /* Chart palette — clean, light-friendly */
+    --chart-1: 215 85% 55%;
+    --chart-2: 160 60% 42%;
+    --chart-3: 262 65% 58%;
+    --chart-4: 38 90% 52%;
+    --chart-5: 0 68% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3 {
+    font-family: 'DM Serif Display', Georgia, serif;
+    letter-spacing: -0.01em;
+  }
+
+  /* Custom scrollbar — subtle on white */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(215 20% 85%);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(215 20% 72%);
+  }
+}
+
+@layer utilities {
+  /* Frosted card — light version */
+  .glass {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(215, 225, 240, 0.7);
+  }
+
+  /* Subtle blue glow on accent actions */
+  .glow-primary {
+    box-shadow: 0 2px 20px rgba(59, 130, 246, 0.2), 0 1px 4px rgba(59, 130, 246, 0.12);
+  }
+
+  /* Gradient text using brand blue */
+  .gradient-text {
+    background: linear-gradient(135deg, #2563eb, #3b82f6, #60a5fa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Loading shimmer — light-mode */
+  .shimmer-bg {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--card)) 0%,
+      hsl(var(--secondary)) 50%,
+      hsl(var(--card)) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s linear infinite;
+  }
+
+  /* Subtle dot-grid background */
+  .grid-bg {
+    background-image: radial-gradient(circle, #d1ddf0 1px, transparent 1px);
+    background-size: 28px 28px;
+    background-color: hsl(var(--background));
+  }
+
+  /* Section divider line */
+  .divider {
+    height: 1px;
+    background: linear-gradient(to right, transparent, hsl(var(--border)), transparent);
+  }
+}
+
+/* ── Animations ──────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%       { transform: scale(1.3); opacity: 0.6; }
+}
+
+/* ── React Grid Layout — light overrides ─────────────────── */
+.react-grid-item.react-grid-placeholder {
+  background: rgba(59, 130, 246, 0.06) !important;
+  border: 2px dashed rgba(59, 130, 246, 0.3) !important;
+  border-radius: 12px !important;
+}
+
+.react-resizable-handle {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.react-grid-item:hover .react-resizable-handle {
+  opacity: 1;
+}
+
+.react-resizable-handle::after {
+  border-color: rgba(59, 130, 246, 0.5) !important;
+}

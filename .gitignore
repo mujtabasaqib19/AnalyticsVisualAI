@@ -1,0 +1,34 @@
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.*.local
+frontend/.env.local
+backend/.env
+analyticsvisualai/.env
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Build outputs
+frontend/.next/
+frontend/out/
+backend/__pycache__/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
