@@ -1,5 +1,4 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/mujtabasaqib19/AnalyticsVisualAI/main/frontend/public/favicon.ico" width="80" alt="Logo" />
   <h1>AnalyticsVisualAI</h1>
   <p><strong>Agentic AI Platform for Autonomous Data Visualization & Analysis</strong></p>
   
