@@ -5,6 +5,7 @@ import { X, Settings, GripVertical } from "lucide-react";
 import type { ChartSpec } from "@/store/dashboardStore";
 import { useDashboardStore } from "@/store/dashboardStore";
 import { ChartRenderer } from "@/components/charts/ChartRenderer";
+import { ChartErrorBoundary } from "@/components/dashboard/ChartErrorBoundary";
 import { cn } from "@/lib/utils";
 import { trackEvent } from "@/lib/analytics";
 
@@ -16,7 +17,8 @@ interface ChartCardProps {
 
 const TYPE_LABELS: Record<string, string> = {
   bar: "Bar", line: "Line", area: "Area", pie: "Pie", donut: "Donut",
-  scatter: "Scatter", kpi_card: "KPI", table: "Table", funnel: "Funnel", gauge: "Gauge",
+  scatter: "Scatter", kpi_card: "KPI", table: "Table", funnel: "Funnel",
+  gauge: "Gauge", heatmap: "Heatmap",
 };
 
 export function ChartCard({ spec, data, onSettingsOpen }: ChartCardProps) {
@@ -136,7 +138,9 @@ export function ChartCard({ spec, data, onSettingsOpen }: ChartCardProps) {
         style={activeTheme ? { background: activeTheme.cardBg } : {}}
       >
         {inView ? (
-          <ChartRenderer spec={spec} data={data} isSelected={isSelected} theme={activeTheme} />
+          <ChartErrorBoundary chartTitle={spec.title}>
+            <ChartRenderer spec={spec} data={data} isSelected={isSelected} theme={activeTheme} />
+          </ChartErrorBoundary>
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <div className="w-8 h-8 rounded-full border-2 border-gray-100 border-t-blue-300 animate-spin" />

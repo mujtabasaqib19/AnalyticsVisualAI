@@ -1,17 +1,29 @@
 import type { DashboardSpec } from "@/store/dashboardStore";
+import type { GeminiValidationResult } from "@/lib/gemini";
 
-export interface ClaudeGenerateRequest {
-  schema: object;
-  userQuery: string;
-  dashboardType: string;  // Any domain — "auto" = Claude self-detects from schema
-  sampleRows?: object[];
+export interface FilePayload {
+  fileName: string;
+  schema:   object;
+  rows:     object[];
 }
 
-export async function generateDashboard(req: ClaudeGenerateRequest): Promise<DashboardSpec> {
+export interface ClaudeGenerateRequest {
+  files:         FilePayload[];
+  userQuery:     string;
+  dashboardType: string;
+}
+
+export interface GenerateResponse {
+  spec:    DashboardSpec;
+  quality: GeminiValidationResult | null;
+  mergedData?: any;
+}
+
+export async function generateDashboard(req: ClaudeGenerateRequest): Promise<GenerateResponse> {
   const response = await fetch("/api/generate", {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+    body:    JSON.stringify(req),
   });
 
   if (!response.ok) {

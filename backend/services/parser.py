@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from typing import Tuple
 import re
+import config
 
 
 def infer_column_type(series: pd.Series) -> str:
@@ -12,7 +12,7 @@ def infer_column_type(series: pd.Series) -> str:
         return "boolean"
 
     # Try parsing as dates
-    sample = series.dropna().head(20).astype(str)
+    sample = series.dropna().head(config.SAMPLE_ROWS_HEAD).astype(str)
     date_patterns = [
         r'^\d{4}-\d{2}-\d{2}',
         r'^\d{2}/\d{2}/\d{4}',
@@ -23,7 +23,7 @@ def infer_column_type(series: pd.Series) -> str:
         1 for v in sample
         if any(re.match(p, v) for p in date_patterns)
     )
-    if date_matches / max(len(sample), 1) > 0.6:
+    if date_matches / max(len(sample), 1) > config.DATE_MATCH_THRESHOLD:
         return "date"
 
     return "string"
@@ -62,7 +62,7 @@ def parse_dataframe(df: pd.DataFrame, file_name: str) -> dict:
     }
 
     # Sample rows — convert to JSON-safe format
-    sample = df.head(20).copy()
+    sample = df.head(config.SAMPLE_ROWS_HEAD).copy()
     for col in sample.select_dtypes(include=["datetime64"]):
         sample[col] = sample[col].astype(str)
     sample_rows = sample.to_dict(orient="records")

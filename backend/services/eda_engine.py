@@ -1,123 +1,386 @@
 """
-EDA Engine — pure-Python / pandas analysis service.
-Runs all transformations and returns a structured EDA result dict.
+EDA Engine — fully LLM-driven analysis service.
+Gemini is the PRIMARY EDA agent. Claude is the BACKUP if Gemini is unavailable.
+Python executes the agent's decisions mechanically via pandas — no deterministic rules.
+
+Agent roles:
+  Gemini  → EDA cleaning plan (primary)
+  Claude  → EDA cleaning plan (backup, same prompt)
+  Pandas  → mechanical execution of whichever agent's plan
 """
 from __future__ import annotations
 
+import json
 import math
-import copy
+import os
+import re
+import logging
 from typing import Any
 
+import anthropic
+import httpx
 import numpy as np
 import pandas as pd
+import config
+
+logger = logging.getLogger(__name__)
+
+EDA_MAX_COLUMNS = 40
+EDA_MAX_ROWS    = 100_000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry point
+# Shared prompt builder (used by both Gemini and Claude agents)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
-    """
-    Main EDA function.
+def _build_eda_prompt(col_stats: list[dict], description: str, sample_rows: list[dict]) -> str:
+    return f"""You are an expert data scientist performing Exploratory Data Analysis (EDA).
+Analyse the dataset described below and return a structured cleaning plan as JSON.
 
-    Parameters
-    ----------
-    rows        : list of row dicts (raw, as parsed)
-    schema      : list of {name, type, nullCount, uniqueCount, sampleValues,
-                           min?, max?} – from the frontend parser
-    description : plain-English description of the dataset
+DATASET DESCRIPTION (provided by user):
+{description or "No description provided."}
 
-    Returns
-    -------
-    Full EDA result dict matching the agreed output JSON schema.
-    """
+COLUMN STATISTICS (includes distribution metrics for outlier reasoning):
+{json.dumps(col_stats, indent=2)}
+
+SAMPLE ROWS (first 20):
+{json.dumps(sample_rows, indent=2)}
+
+Your task: produce a JSON cleaning plan with the following structure.
+Return ONLY valid JSON — no markdown fences, no other text.
+
+{{
+  "columns": [
+    {{
+      "name": "<column name>",
+      "classification": "<one of: id_column | date | binary | numeric_continuous | numeric_discrete | high_cardinality_numeric | categorical>",
+      "drop": <true if >40% nulls OR the column has zero analytical value, otherwise false>,
+      "drop_reason": "<brief reason if drop=true, else null>",
+      "null_strategy": "<one of: median | mean | mode | constant | none>",
+      "null_constant": "<value to fill if strategy=constant, else null>",
+      "coerce_type": "<one of: numeric | date | none>",
+      "binary_labels": {{"0": "<label for 0>", "1": "<label for 1>"}} or null,
+      "range_buckets": {{"<label>": "<lo-hi range string>"}} or null,
+      "recommended_chart": "<one of: bar | donut | line | scatter | area | none>",
+      "outlier_flag": <true if this numeric column contains suspicious outliers, false otherwise>,
+      "outlier_lower_bound": <numeric lower bound below which values are outliers, or null>,
+      "outlier_upper_bound": <numeric upper bound above which values are outliers, or null>,
+      "outlier_reasoning": "<specific reason citing actual stats if outlier_flag=true, else null>",
+      "reasoning": "<one concise sentence explaining your decisions>"
+    }}
+  ],
+  "insights": [
+    "<actionable insight string 1>",
+    "<actionable insight string 2>",
+    "... up to 6 insights total"
+  ]
+}}
+
+RULES:
+- classification MUST be one of the exact strings listed above.
+- binary_labels: only set for binary columns; labels must reflect the dataset context (use description).
+- range_buckets: only set for high_cardinality_numeric columns; use 3-5 meaningful labels with ranges like "Low: 0-33".
+- null_strategy "none" means leave nulls as-is (e.g. for id_column or date).
+- Do NOT drop columns just because they have nulls under 40% — impute instead.
+- outlier_flag: only set true for numeric columns (numeric_continuous, numeric_discrete, high_cardinality_numeric).
+  Use mean, std, p25, p75 to reason. Flag if max >> p75 + 1.5*(p75-p25) or min << p25 - 1.5*(p25-p75).
+  Use domain knowledge from the description to judge plausibility.
+- outlier_lower_bound / outlier_upper_bound: REQUIRED when outlier_flag=true; provide the numeric bounds you used.
+- Insights must be specific, data-driven, and reference actual column names and values.
+- Every column in the statistics list MUST appear in the output, in the same order."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entry point (async — requires at least one LLM key)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
     if not rows:
         return _empty_result()
+
+    if len(rows) > EDA_MAX_ROWS:
+        raise ValueError(
+            f"Dataset too large for EDA: {len(rows):,} rows (limit {EDA_MAX_ROWS:,}). "
+            "Use a filtered or sampled subset."
+        )
+    if len(schema) > EDA_MAX_COLUMNS:
+        raise ValueError(
+            f"Dataset too wide for EDA: {len(schema)} columns (limit {EDA_MAX_COLUMNS}). "
+            "Select a subset of columns before running EDA."
+        )
 
     df = pd.DataFrame(rows)
     original_rows = len(df)
 
-    # ── 1. Duplicate removal ─────────────────────────────────────────────────
-    df_clean = df.drop_duplicates()
-    duplicates_removed = original_rows - len(df_clean)
-    df = df_clean.copy()
+    # ── 1. Duplicate removal (always safe, no decisions needed) ──────────────
+    df = df.drop_duplicates()
+    duplicates_removed = original_rows - len(df)
 
-    # ── Build column lookup ──────────────────────────────────────────────────
+    # ── 2. Build column lookup ────────────────────────────────────────────────
     schema_map: dict[str, dict] = {c["name"]: c for c in schema}
     col_names = [c for c in df.columns if c in schema_map]
 
-    # ── 2. Classify columns ──────────────────────────────────────────────────
-    classifications: dict[str, str] = {}
-    for col in col_names:
-        classifications[col] = _classify_column(df[col], schema_map[col])
+    # ── 3. Compute per-column distribution stats for the LLM ─────────────────
+    col_stats = _compute_col_stats(df, col_names, schema_map)
 
-    # ── 3. Type fixes ─────────────────────────────────────────────────────────
+    # ── 4. Ask primary agent (Gemini) — failover to backup agent (Claude) ────
+    plan = await _get_llm_cleaning_plan(col_stats, description, rows[:20])
+
+    # ── 5. Execute the plan mechanically ─────────────────────────────────────
+    result = _execute_plan(df, col_names, schema_map, plan, duplicates_removed, original_rows)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 — column statistics (measurement only, no decisions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_col_stats(df: pd.DataFrame,
+                       col_names: list[str],
+                       schema_map: dict[str, dict]) -> list[dict]:
+    stats = []
+    for col in col_names:
+        sch = schema_map[col]
+        series = df[col]
+        null_count = int(series.isna().sum())
+        total = len(series)
+        non_null = series.dropna()
+        unique_count = int(series.nunique())
+
+        sample_vals = [str(v) for v in non_null.head(8).tolist()]
+
+        num_min = num_max = num_mean = num_std = num_p25 = num_p75 = None
+        try:
+            nums = pd.to_numeric(non_null, errors="coerce").dropna()
+            if len(nums) > 0:
+                num_min  = _safe_scalar(nums.min())
+                num_max  = _safe_scalar(nums.max())
+                num_mean = _safe_scalar(nums.mean())
+                num_std  = _safe_scalar(nums.std())
+                num_p25  = _safe_scalar(nums.quantile(0.25))
+                num_p75  = _safe_scalar(nums.quantile(0.75))
+        except Exception:
+            pass
+
+        stats.append({
+            "name": col,
+            "schema_type": sch.get("type", "string"),
+            "null_count": null_count,
+            "null_pct": round(null_count / total * 100, 1) if total > 0 else 0,
+            "unique_count": unique_count,
+            "total_rows": total,
+            "sample_values": sample_vals,
+            "numeric_min": num_min,
+            "numeric_max": num_max,
+            "numeric_mean": num_mean,
+            "numeric_std": num_std,
+            "numeric_p25": num_p25,
+            "numeric_p75": num_p75,
+        })
+    return stats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4a — Primary agent: Gemini
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_llm_cleaning_plan(col_stats: list[dict],
+                                  description: str,
+                                  sample_rows: list[dict]) -> dict:
+    """
+    Ask Gemini (primary) for the cleaning plan.
+    On any failure, route to Claude (backup) — never fall back to deterministic rules.
+    """
+    GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+    if not GEMINI_KEY:
+        logger.info("GEMINI_API_KEY not set — routing EDA plan to Claude (backup agent).")
+        return await _get_claude_cleaning_plan(col_stats, description, sample_rows)
+
+    prompt = _build_eda_prompt(col_stats, description, sample_rows)
+
+    try:
+        async with httpx.AsyncClient(timeout=config.GEMINI_EDA_TIMEOUT) as client:
+            resp = await client.post(
+                f"{config.GEMINI_ENDPOINT}?key={GEMINI_KEY}",
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                headers={"Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+            text = re.sub(r"```(?:json)?", "", text).strip()
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                plan = json.loads(json_match.group())
+                if "columns" in plan and "insights" in plan:
+                    logger.info("EDA plan produced by Gemini (primary agent).")
+                    return plan
+    except Exception as e:
+        logger.warning(f"Gemini EDA plan failed: {e} — routing to Claude (backup agent).")
+
+    return await _get_claude_cleaning_plan(col_stats, description, sample_rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4b — Backup agent: Claude
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_claude_cleaning_plan(col_stats: list[dict],
+                                     description: str,
+                                     sample_rows: list[dict]) -> dict:
+    """
+    Ask Claude for the cleaning plan — A2A failover when Gemini is unavailable.
+    Same prompt, same schema. Raises if Claude is also unavailable — no deterministic fallback.
+    """
+    CLAUDE_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    if not CLAUDE_KEY or CLAUDE_KEY.startswith("your_"):
+        raise ValueError(
+            "EDA requires at least one LLM key. "
+            "Set GEMINI_API_KEY (primary) or ANTHROPIC_API_KEY (backup) in your .env file."
+        )
+
+    prompt = _build_eda_prompt(col_stats, description, sample_rows)
+
+    async_client = anthropic.AsyncAnthropic(api_key=CLAUDE_KEY)
+    try:
+        message = await async_client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=8192,   # Claude 3.5 supports up to 8192 output tokens. Do not set higher or API will reject it.
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = message.content[0].text if message.content else ""
+        text = re.sub(r"```(?:json)?", "", text).strip()
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            try:
+                plan = json.loads(json_match.group())
+                if "columns" in plan and "insights" in plan:
+                    logger.info("EDA plan produced by Claude (backup agent).")
+                    return plan
+            except json.JSONDecodeError as je:
+                logger.error(f"Claude returned invalid JSON (possibly truncated). Error: {je}\nRaw output length: {len(text)}")
+                raise ValueError(f"Claude returned invalid/truncated JSON: {je}") from je
+    except Exception as e:
+        raise ValueError(f"Both Gemini and Claude failed to produce an EDA plan: {e}") from e
+
+    raise ValueError("Claude returned an unparseable EDA plan — cannot proceed without LLM analysis.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5 — execute the plan mechanically with pandas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _execute_plan(df: pd.DataFrame,
+                  col_names: list[str],
+                  schema_map: dict[str, dict],
+                  plan: dict,
+                  duplicates_removed: int,
+                  original_rows: int) -> dict:
+    """
+    Execute the LLM's cleaning plan step by step.
+    All decisions come from `plan` — Python is the mechanical executor only.
+    """
+    plan_map: dict[str, dict] = {c["name"]: c for c in plan.get("columns", [])}
+
     type_fixes: dict[str, str] = {}
-    for col in col_names:
-        cls = classifications[col]
-        if cls in ("numeric_continuous", "numeric_discrete", "high_cardinality_numeric",
-                   "binary"):
-            df[col], fixed = _coerce_numeric(df[col])
-            if fixed:
-                type_fixes[col] = "string → numeric"
-        elif cls == "date":
-            df[col], fixed = _coerce_date(df[col])
-            if fixed:
-                type_fixes[col] = "string → datetime"
-
-    # ── 4. Missing value imputation ──────────────────────────────────────────
     nulls_imputed: dict[str, Any] = {}
     dropped_columns: list[str] = []
-
-    for col in col_names:
-        null_count = int(df[col].isna().sum())
-        null_pct = null_count / len(df) if len(df) > 0 else 0
-
-        if null_pct > 0.40:
-            dropped_columns.append(col)
-            continue
-
-        if null_count > 0:
-            cls = classifications[col]
-            if cls in ("numeric_continuous", "numeric_discrete",
-                       "high_cardinality_numeric", "binary"):
-                fill_val = df[col].median()
-                if pd.isna(fill_val):
-                    fill_val = 0
-                df[col] = df[col].fillna(fill_val)
-                nulls_imputed[col] = {"method": "median", "value": _safe_scalar(fill_val)}
-            else:
-                mode_vals = df[col].mode()
-                fill_val = mode_vals.iloc[0] if len(mode_vals) > 0 else "Unknown"
-                df[col] = df[col].fillna(fill_val)
-                nulls_imputed[col] = {"method": "mode", "value": str(fill_val)}
-
-    # Drop columns with > 40% nulls
-    df = df.drop(columns=dropped_columns, errors="ignore")
-    for dc in dropped_columns:
-        col_names.remove(dc)
-
-    # ── 5. Binary decoding ───────────────────────────────────────────────────
     binary_decodings: list[dict] = []
-    for col in col_names:
-        if classifications[col] == "binary":
-            labels = _infer_binary_labels(col, description)
-            binary_decodings.append({
-                "column": col,
-                "0_label": labels[0],
-                "1_label": labels[1],
-            })
-            df[col] = df[col].map({0: labels[0], 1: labels[1],
-                                   0.0: labels[0], 1.0: labels[1],
-                                   "0": labels[0], "1": labels[1],
-                                   False: labels[0], True: labels[1]})
-
-    # ── 6. Range-based grouping ───────────────────────────────────────────────
     range_groupings: list[dict] = []
+
+    # ── Type coercion (LLM decided; Python executes without second-guessing) ──
     for col in col_names:
-        if classifications[col] == "high_cardinality_numeric":
-            buckets, new_col_name = _build_range_groups(df, col, schema_map.get(col, {}))
+        entry = plan_map.get(col, {})
+        coerce = entry.get("coerce_type", "none")
+        if coerce == "numeric":
+            converted = pd.to_numeric(df[col], errors="coerce")
+            success_rate = converted.notna().sum() / max(len(df[col].dropna()), 1)
+            df[col] = converted
+            type_fixes[col] = f"string → numeric (LLM-directed; {success_rate:.0%} converted)"
+        elif coerce == "date":
+            try:
+                # Try parsing with dayfirst=True (handles international DD/MM/YYYY)
+                converted = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                success_rate = converted.notna().sum() / max(len(df[col].dropna()), 1)
+                
+                # If parsing was poor, try American format (MM/DD/YYYY)
+                if success_rate < 0.5:
+                    converted_alt = pd.to_datetime(df[col], errors="coerce", dayfirst=False)
+                    alt_rate = converted_alt.notna().sum() / max(len(df[col].dropna()), 1)
+                    if alt_rate > success_rate:
+                        converted = converted_alt
+                        success_rate = alt_rate
+                
+                # Format to standard ISO dates, replacing pandas NaT with actual None
+                df[col] = converted.dt.strftime('%Y-%m-%d')
+                df[col] = df[col].replace({'NaT': None, 'NaN': None, pd.NaT: None})
+                
+                type_fixes[col] = f"string → datetime (LLM-directed; {success_rate:.0%} converted)"
+            except Exception:
+                pass
+
+    # ── Drop columns (per LLM decision) ──────────────────────────────────────
+    for col in col_names:
+        entry = plan_map.get(col, {})
+        if entry.get("drop", False):
+            dropped_columns.append(col)
+
+    df = df.drop(columns=dropped_columns, errors="ignore")
+    active_cols = [c for c in col_names if c not in dropped_columns]
+
+    # ── Null imputation (LLM chose the strategy) ─────────────────────────────
+    for col in active_cols:
+        entry = plan_map.get(col, {})
+        null_count = int(df[col].isna().sum())
+        if null_count == 0:
+            continue
+        strategy = entry.get("null_strategy", "none")
+        if strategy == "median":
+            num = pd.to_numeric(df[col], errors="coerce")
+            fill_val = num.median()
+            if pd.isna(fill_val):
+                fill_val = 0
+            df[col] = df[col].fillna(fill_val)
+            nulls_imputed[col] = {"method": "median", "value": _safe_scalar(fill_val)}
+        elif strategy == "mean":
+            num = pd.to_numeric(df[col], errors="coerce")
+            fill_val = num.mean()
+            if pd.isna(fill_val):
+                fill_val = 0
+            df[col] = df[col].fillna(fill_val)
+            nulls_imputed[col] = {"method": "mean", "value": _safe_scalar(fill_val)}
+        elif strategy == "mode":
+            mode_vals = df[col].mode()
+            fill_val = mode_vals.iloc[0] if len(mode_vals) > 0 else "Unknown"
+            df[col] = df[col].fillna(fill_val)
+            nulls_imputed[col] = {"method": "mode", "value": str(fill_val)}
+        elif strategy == "constant":
+            fill_val = entry.get("null_constant", "Unknown") or "Unknown"
+            df[col] = df[col].fillna(fill_val)
+            nulls_imputed[col] = {"method": "constant", "value": str(fill_val)}
+        # "none" → leave as-is per LLM instruction
+
+    # ── Binary decoding ───────────────────────────────────────────────────────
+    for col in active_cols:
+        entry = plan_map.get(col, {})
+        if entry.get("classification") == "binary":
+            labels = entry.get("binary_labels") or {"0": "No", "1": "Yes"}
+            label_0 = labels.get("0", "No")
+            label_1 = labels.get("1", "Yes")
+            binary_decodings.append({"column": col, "0_label": label_0, "1_label": label_1})
+            df[col] = df[col].map({
+                0: label_0, 1: label_1, 0.0: label_0, 1.0: label_1,
+                "0": label_0, "1": label_1, False: label_0, True: label_1,
+            })
+
+    # ── Range grouping ────────────────────────────────────────────────────────
+    for col in active_cols:
+        entry = plan_map.get(col, {})
+        if entry.get("classification") == "high_cardinality_numeric":
+            buckets = entry.get("range_buckets")
             if buckets:
+                new_col_name = col + "_group"
                 df[new_col_name] = df[col].apply(lambda v: _assign_bucket(v, buckets))
                 range_groupings.append({
                     "original_column": col,
@@ -125,33 +388,35 @@ def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
                     "buckets": buckets,
                 })
 
-    # ── 7. Outlier detection (IQR) ────────────────────────────────────────────
+    # ── Outlier detection (LLM decides; Python counts affected rows) ──────────
     outlier_report: list[dict] = []
-    outlier_flags: dict[str, list[bool]] = {}
-    for col in col_names:
-        if classifications[col] in ("numeric_continuous", "numeric_discrete",
-                                    "high_cardinality_numeric"):
-            series = pd.to_numeric(df[col], errors="coerce").dropna()
-            if len(series) < 4:
-                continue
-            q1, q3 = series.quantile(0.25), series.quantile(0.75)
-            iqr = q3 - q1
-            lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-            mask = (pd.to_numeric(df[col], errors="coerce") < lower) | \
-                   (pd.to_numeric(df[col], errors="coerce") > upper)
-            count = int(mask.sum())
+    for col in active_cols:
+        entry = plan_map.get(col, {})
+        if entry.get("outlier_flag", False):
+            lower = entry.get("outlier_lower_bound")
+            upper = entry.get("outlier_upper_bound")
+            series = pd.to_numeric(df[col], errors="coerce")
+            if lower is not None and upper is not None:
+                mask = (series < float(lower)) | (series > float(upper))
+                count = int(mask.sum())
+            else:
+                count = int(series.notna().sum())
             if count > 0:
-                outlier_report.append({"column": col, "outlier_count": count,
-                                       "action": "flagged"})
-                outlier_flags[col] = mask.tolist()
+                outlier_report.append({
+                    "column": col,
+                    "outlier_count": count,
+                    "action": "flagged",
+                    "reasoning": entry.get("outlier_reasoning", ""),
+                })
 
-    # ── 8. Build column profiles ──────────────────────────────────────────────
+    # ── Build column profiles ─────────────────────────────────────────────────
     column_profiles: list[dict] = []
     excluded: list[str] = []
     viz_ready: list[str] = []
 
-    for col in col_names:
-        cls = classifications[col]
+    for col in active_cols:
+        entry = plan_map.get(col, {})
+        cls = entry.get("classification", "categorical")
         sch = schema_map.get(col, {})
 
         if cls == "id_column":
@@ -173,12 +438,11 @@ def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
         mode_s = series.mode()
         cat_mode = str(mode_s.iloc[0]) if len(mode_s) > 0 and mean_val is None else None
 
-        # Transformation description
         tx = []
         if col in nulls_imputed:
             tx.append(f"null imputation ({nulls_imputed[col]['method']})")
         if col in type_fixes:
-            tx.append(f"type fix ({type_fixes[col]})")
+            tx.append(type_fixes[col])
         if cls == "binary":
             bd = next((b for b in binary_decodings if b["column"] == col), None)
             if bd:
@@ -205,22 +469,18 @@ def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
             "transformation_applied": "; ".join(tx) if tx else "none",
             "new_column_created": new_col,
             "range_buckets": buckets,
-            "recommended_chart": _recommend_chart(cls, unique_count),
+            "recommended_chart": entry.get("recommended_chart", "bar"),
             "has_outliers": any(r["column"] == col for r in outlier_report),
+            "llm_reasoning": entry.get("reasoning", ""),
         }
         column_profiles.append(profile)
 
-        # Build viz-ready column list
         if rg:
             viz_ready.append(rg["new_column"])
         elif cls != "id_column":
             viz_ready.append(col)
 
-    # ── 9. EDA insights ───────────────────────────────────────────────────────
-    insights = _generate_insights(df, column_profiles, outlier_report,
-                                  binary_decodings, range_groupings, duplicates_removed)
-
-    # ── 10. Return cleaned rows (with transformations applied) ────────────────
+    insights = plan.get("insights", [])
     clean_rows = df.where(pd.notna(df), None).to_dict(orient="records")
 
     return {
@@ -246,222 +506,11 @@ def run_eda(rows: list[dict], schema: list[dict], description: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
+# Utility helpers (mechanical — no analytical decisions)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _classify_column(series: pd.Series, sch: dict) -> str:
-    col_type = sch.get("type", "string")
-    unique_count = int(series.nunique())
-    total = len(series)
-    col_name_lower = sch.get("name", "").lower()
-
-    # ID column heuristics
-    if unique_count == total and total > 50:
-        if any(kw in col_name_lower for kw in ("id", "_id", "uuid", "key", "index")):
-            return "id_column"
-
-    if col_type == "date":
-        return "date"
-
-    if col_type == "boolean":
-        return "binary"
-
-    if col_type == "numeric":
-        non_null = series.dropna()
-        # Check binary
-        unique_vals = set(non_null.unique())
-        if unique_vals.issubset({0, 1, 0.0, 1.0, "0", "1", True, False}):
-            return "binary"
-
-        if unique_count <= 2:
-            return "binary"
-
-        if unique_count <= 8:
-            # Check if it's integers with small range — categorical-like
-            try:
-                nums = pd.to_numeric(non_null, errors="coerce").dropna()
-                all_int = (nums == nums.round()).all()
-                if all_int and unique_count <= 5:
-                    return "numeric_discrete"
-            except Exception:
-                pass
-            return "numeric_discrete"
-
-        # Wide-range numeric: high cardinality
-        try:
-            nums = pd.to_numeric(non_null, errors="coerce").dropna()
-            if len(nums) == 0:
-                return "numeric_continuous"
-            val_min, val_max = nums.min(), nums.max()
-            val_range = val_max - val_min
-
-            all_int = (nums == nums.round()).all()
-            # If all integers with >5 unique values and range > 5 → high_cardinality_numeric
-            if all_int and unique_count > 5 and val_range > 5:
-                return "high_cardinality_numeric"
-            # Floats/decimals
-            if not all_int:
-                return "numeric_continuous"
-        except Exception:
-            pass
-        return "numeric_discrete"
-
-    # String column
-    if unique_count <= 20 or (total > 0 and unique_count / total < 0.05):
-        return "categorical"
-    return "high_cardinality_numeric" if col_type == "numeric" else "categorical"
-
-
-def _coerce_numeric(series: pd.Series):
-    if pd.api.types.is_numeric_dtype(series):
-        return series, False
-    converted = pd.to_numeric(series, errors="coerce")
-    success_rate = converted.notna().sum() / max(len(series.dropna()), 1)
-    if success_rate > 0.8:
-        return converted, True
-    return series, False
-
-
-def _coerce_date(series: pd.Series):
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series, False
-    try:
-        converted = pd.to_datetime(series, errors="coerce")
-        success_rate = converted.notna().sum() / max(len(series.dropna()), 1)
-        if success_rate > 0.7:
-            return converted.astype(str), True
-    except Exception:
-        pass
-    return series, False
-
-
-def _infer_binary_labels(col_name: str, description: str) -> tuple[str, str]:
-    """Return (0_label, 1_label) based on column name heuristics."""
-    col_lower = col_name.lower()
-    desc_lower = description.lower()
-
-    patterns = {
-        ("holiday", "holiday_flag", "is_holiday"):    ("Regular Week", "Holiday Week"),
-        ("depression",):                               ("No Depression", "Depression"),
-        ("is_active", "active"):                       ("Inactive", "Active"),
-        ("is_employed", "employed"):                   ("Unemployed", "Employed"),
-        ("is_male", "gender_male"):                    ("Female", "Male"),
-        ("is_female",):                                ("Male", "Female"),
-        ("weekend",):                                  ("Weekday", "Weekend"),
-        ("churn",):                                    ("Retained", "Churned"),
-        ("fraud", "is_fraud"):                         ("Legitimate", "Fraudulent"),
-        ("default", "loan_default"):                   ("No Default", "Default"),
-        ("converted", "conversion"):                   ("Not Converted", "Converted"),
-        ("promoted",):                                 ("Not Promoted", "Promoted"),
-        ("sick", "illness"):                           ("Healthy", "Sick"),
-        ("smoker", "smoking"):                         ("Non-Smoker", "Smoker"),
-        ("cancelled",):                                ("Active", "Cancelled"),
-        ("completed",):                                ("Incomplete", "Completed"),
-    }
-    for keys, labels in patterns.items():
-        if any(k in col_lower for k in keys):
-            return labels
-
-    return ("No", "Yes")
-
-
-def _build_range_groups(df: pd.DataFrame, col: str, sch: dict) -> tuple[dict, str]:
-    """Auto-generate meaningful buckets for high_cardinality_numeric columns."""
-    new_col_name = col + "_group"
-    series = pd.to_numeric(df[col], errors="coerce").dropna()
-    if len(series) == 0:
-        return {}, new_col_name
-
-    val_min = float(series.min())
-    val_max = float(series.max())
-    val_range = val_max - val_min
-    col_lower = col.lower()
-
-    # ── Named heuristics ──────────────────────────────────────────────────────
-    if any(k in col_lower for k in ("addiction", "stress", "anxiety", "severity",
-                                     "level", "score", "rating", "intensity")):
-        # Determine scale
-        if val_max <= 5:
-            buckets = {"Low": "1-2", "Medium": "3", "High": "4-5"}
-        elif val_max <= 10:
-            buckets = {"Low": "1-3", "Medium": "4-6", "High": "7-10"}
-        elif val_max <= 100:
-            buckets = {"Low": "0-33", "Medium": "34-66", "High": "67-100"}
-        else:
-            buckets = _equal_width_buckets(val_min, val_max, 4,
-                                           ["Low", "Medium", "High", "Very High"])
-        return buckets, new_col_name
-
-    if "age" in col_lower:
-        if val_min >= 13 and val_max <= 19:
-            buckets = {"Early Teen": "13-14", "Mid Teen": "15-16", "Late Teen": "17-19"}
-        elif val_min >= 18 and val_max <= 35:
-            buckets = {"Young Adult": "18-25", "Adult": "26-35"}
-        elif val_max <= 100:
-            buckets = {"Youth": f"{int(val_min)}-25", "Adult": "26-40",
-                       "Middle Age": "41-60", "Senior": f"61-{int(val_max)}"}
-        else:
-            buckets = _equal_width_buckets(val_min, val_max, 4,
-                                           ["Youth", "Young Adult", "Adult", "Senior"])
-        return buckets, new_col_name
-
-    if any(k in col_lower for k in ("sleep", "hours", "duration")):
-        if val_max <= 24:
-            buckets = {"Short": f"{int(val_min)}-5", "Average": "6-8",
-                       "Long": f"9-{int(val_max)}"}
-        else:
-            buckets = _equal_width_buckets(val_min, val_max, 3, ["Low", "Medium", "High"])
-        return buckets, new_col_name
-
-    if any(k in col_lower for k in ("income", "salary", "revenue", "amount",
-                                     "price", "cost", "spend")):
-        buckets = _quartile_buckets(series, ["Low", "Medium", "High", "Very High"])
-        return buckets, new_col_name
-
-    if any(k in col_lower for k in ("percent", "pct", "rate", "ratio")):
-        buckets = {"Low": "0-33", "Medium": "34-66", "High": "67-100"}
-        return buckets, new_col_name
-
-    # ── Generic equal-width fallback ──────────────────────────────────────────
-    if val_range <= 10:
-        n_buckets = 3
-        labels = ["Low", "Medium", "High"]
-    elif val_range <= 50:
-        n_buckets = 4
-        labels = ["Low", "Medium", "High", "Very High"]
-    else:
-        n_buckets = 4
-        labels = ["Low", "Medium", "High", "Very High"]
-
-    buckets = _equal_width_buckets(val_min, val_max, n_buckets, labels)
-    return buckets, new_col_name
-
-
-def _equal_width_buckets(val_min: float, val_max: float,
-                          n: int, labels: list[str]) -> dict:
-    step = (val_max - val_min) / n
-    buckets = {}
-    for i, label in enumerate(labels):
-        lo = val_min + i * step
-        hi = val_max if i == n - 1 else lo + step
-        buckets[label] = f"{int(lo)}-{int(hi)}"
-    return buckets
-
-
-def _quartile_buckets(series: pd.Series, labels: list[str]) -> dict:
-    q = [series.quantile(i / len(labels)) for i in range(len(labels) + 1)]
-    buckets = {}
-    for i, label in enumerate(labels):
-        buckets[label] = f"{int(q[i])}-{int(q[i+1])}"
-    return buckets
-
-
 def _assign_bucket(value: Any, buckets: dict) -> str:
-    """Assign a row value to a bucket label.
-
-    Handles negative numbers in ranges (e.g. '-10-0') by splitting only on
-    hyphens that are immediately preceded by a digit character.
-    """
+    """Assign a row value to a bucket label from the LLM-produced bucket map."""
     import re as _re
     try:
         v = float(value)
@@ -469,7 +518,6 @@ def _assign_bucket(value: Any, buckets: dict) -> str:
         return str(value)
 
     for label, rng in buckets.items():
-        # Split on a hyphen that is preceded by a digit (handles negatives)
         parts = _re.split(r'(?<=\d)-', str(rng))
         if len(parts) == 2:
             try:
@@ -479,70 +527,6 @@ def _assign_bucket(value: Any, buckets: dict) -> str:
             except ValueError:
                 continue
     return "Other"
-
-
-def _recommend_chart(classification: str, unique_count: int) -> str:
-    mapping = {
-        "categorical":              "bar" if unique_count <= 8 else "donut",
-        "binary":                   "donut",
-        "numeric_continuous":       "scatter" if unique_count > 50 else "area",
-        "numeric_discrete":         "bar",
-        "high_cardinality_numeric": "bar",  # always use _group version
-        "date":                     "line",
-        "id_column":                "none",
-    }
-    return mapping.get(classification, "bar")
-
-
-def _generate_insights(df: pd.DataFrame, profiles: list[dict],
-                       outlier_report: list[dict],
-                       binary_decodings: list[dict],
-                       range_groupings: list[dict],
-                       duplicates_removed: int) -> list[str]:
-    insights = []
-    if duplicates_removed > 0:
-        insights.append(f"🔁 {duplicates_removed} duplicate rows were removed before analysis.")
-
-    high_null = [p for p in profiles if p["null_pct"] > 20]
-    if high_null:
-        cols = ", ".join(p["name"] for p in high_null)
-        insights.append(f"⚠️ High null rate (>20%) detected in: {cols}. Median/mode imputation applied.")
-
-    if outlier_report:
-        total_outliers = sum(r["outlier_count"] for r in outlier_report)
-        cols = ", ".join(r["column"] for r in outlier_report)
-        insights.append(f"📊 {total_outliers} statistical outliers detected across columns: {cols}. "
-                        f"Charts will show ⚠ warning flags.")
-
-    if binary_decodings:
-        cols = ", ".join(b["column"] for b in binary_decodings)
-        insights.append(f"🏷️ Binary columns decoded with meaningful labels: {cols}.")
-
-    if range_groupings:
-        for rg in range_groupings:
-            buckets_str = " | ".join(
-                f"{k}: {v}" for k, v in list(rg["buckets"].items())[:3]
-            )
-            insights.append(
-                f"📦 '{rg['original_column']}' grouped into '{rg['new_column']}': {buckets_str}")
-
-    num_profiles = [p for p in profiles if p["classification"] in
-                    ("numeric_continuous", "numeric_discrete", "high_cardinality_numeric")]
-    if num_profiles:
-        highest_mean = max(num_profiles, key=lambda p: p.get("mean") or 0)
-        if highest_mean.get("mean") is not None:
-            insights.append(
-                f"📈 Highest average value: '{highest_mean['name']}' "
-                f"with mean = {highest_mean['mean']:.2f}")
-
-    cat_profiles = [p for p in profiles if p["classification"] == "categorical"]
-    if cat_profiles:
-        most_diverse = max(cat_profiles, key=lambda p: p["unique_count"])
-        insights.append(
-            f"🗂️ Most diverse categorical column: '{most_diverse['name']}' "
-            f"with {most_diverse['unique_count']} unique values.")
-
-    return insights
 
 
 def _safe_scalar(val: Any) -> Any:

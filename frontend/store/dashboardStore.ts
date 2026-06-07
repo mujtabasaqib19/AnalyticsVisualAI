@@ -8,7 +8,7 @@ export type { DashboardTheme };
 
 export type ChartType =
   | "bar" | "line" | "area" | "pie" | "donut"
-  | "scatter" | "kpi_card" | "table" | "funnel" | "gauge";
+  | "scatter" | "kpi_card" | "table" | "funnel" | "gauge" | "heatmap";
 
 export interface ChartSpec {
   id: string;
@@ -21,6 +21,8 @@ export interface ChartSpec {
   color?: string;
   position: { x: number; y: number; w: number; h: number };
   filters?: Record<string, unknown>;
+  /** Max number of categories to display on bar/line/area charts (default: BAR_CATEGORY_LIMIT=20) */
+  top_n?: number;
 }
 
 export interface DashboardSpec {
@@ -33,14 +35,59 @@ export interface DashboardSpec {
 
 export type GenerationStatus = "idle" | "parsing" | "validating" | "generating" | "ready" | "error";
 
-// We persist parsedData but cap rows so we stay well under the
-// localStorage 5 MB limit. Charts use this sample for rendering.
-const PERSIST_ROWS_LIMIT = 2_000;
-
+// Rows are NEVER persisted to localStorage — they are too large and are
+// re-parsed from the file on page reload. Only schema + metadata is kept.
 function slimParsedData(pd: ParsedData | null): ParsedData | null {
   if (!pd) return null;
-  return { ...pd, rows: pd.rows.slice(0, PERSIST_ROWS_LIMIT) };
+  // Persist schema/metadata but zero rows
+  return { ...pd, rows: [] };
 }
+
+// Safe localStorage wrapper — silently no-ops on QuotaExceededError instead
+// of crashing the whole app.
+const safeLocalStorage = {
+  getItem: (name: string) => {
+    try { return localStorage.getItem(name); } catch { return null; }
+  },
+  setItem: (name: string, value: string) => {
+    try {
+      localStorage.setItem(name, value);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "QuotaExceededError") {
+        // Quota hit — persist minimal fallback (spec + query only, no row data)
+        try {
+          const parsed = JSON.parse(value);
+          const minimal = JSON.stringify({
+            state: {
+              dashboardSpec: parsed?.state?.dashboardSpec ?? null,
+              userQuery:     parsed?.state?.userQuery     ?? "",
+              dashboardType: parsed?.state?.dashboardType ?? "auto",
+              status:        parsed?.state?.status        ?? "idle",
+              activeTheme:   parsed?.state?.activeTheme   ?? null,
+              validation:    parsed?.state?.validation    ?? null,
+              selectedFileIndex: parsed?.state?.selectedFileIndex ?? -1,
+              // Store schema only — no rows
+              parsedData: parsed?.state?.parsedData
+                ? { ...parsed.state.parsedData, rows: [] }
+                : null,
+              parsedDataArray: (parsed?.state?.parsedDataArray ?? []).map(
+                (f: ParsedData) => ({ ...f, rows: [] })
+              ),
+            },
+            version: parsed?.version,
+          });
+          localStorage.setItem(name, minimal);
+        } catch {
+          // If even the minimal write fails, clear the key so the app stays functional
+          try { localStorage.removeItem(name); } catch { /* ignore */ }
+        }
+      }
+    }
+  },
+  removeItem: (name: string) => {
+    try { localStorage.removeItem(name); } catch { /* ignore */ }
+  },
+};
 
 interface DashboardState {
   parsedDataArray: ParsedData[];
@@ -239,16 +286,13 @@ export const useDashboardStore = create<DashboardState>()(
         }),
     }),
     {
-      name: "analyticsvisualai-v2",      // bumped name clears stale v1 cache
-      storage: createJSONStorage(() => localStorage),
+      name: "analyticsvisualai-v3",      // bumped — clears stale caches with row data
+      storage: createJSONStorage(() => safeLocalStorage),
 
       // ── What we persist ───────────────────────────────────────────────────
-      // • dashboardSpec  — the full chart definitions (small JSON)
-      // • userQuery / dashboardType — needed to re-generate if user asks
-      // • validation     — Gemini score badge
-      // • parsedData     — schema + first 2 000 rows (keeps us under 5 MB)
-      // • status         — persisted as "ready" whenever a spec exists so the
-      //                    dashboard page knows not to re-trigger generation
+      // Rows are NEVER written to localStorage (they are too large).
+      // Only schema metadata, the dashboard spec, and UI state are persisted.
+      // On reload the user re-uploads the file; rows live in memory only.
       partialize: (s) => ({
         dashboardSpec:    s.dashboardSpec,
         validation:       s.validation,
@@ -256,14 +300,14 @@ export const useDashboardStore = create<DashboardState>()(
         dashboardType:    s.dashboardType,
         selectedFileIndex: s.selectedFileIndex,
         activeTheme:      s.activeTheme,
-        // Slim rows to stay under localStorage limit
+        // Schema + metadata only — no rows
         parsedData: slimParsedData(s.parsedData),
-        parsedDataArray:  s.parsedDataArray.map(slimParsedData).filter(Boolean) as ParsedData[],
-        // Always restore as "ready" if a spec exists — prevents auto re-generation
+        parsedDataArray: s.parsedDataArray.map(slimParsedData).filter(Boolean) as ParsedData[],
+        // Always restore as "ready" if a spec exists
         status: s.dashboardSpec ? "ready" : "idle",
       }),
 
-      version: 2,
+      version: 3,
     }
   )
 );

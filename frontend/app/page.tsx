@@ -83,12 +83,6 @@ export default function LandingPage() {
           <div className="hidden md:flex items-center gap-1">
             <Link
               href="/upload"
-              className="px-4 py-2 text-sm text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Get Started
-            </Link>
-            <Link
-              href="/upload"
               className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-all glow-primary shadow-sm"
             >
               Try Free →
@@ -128,13 +122,6 @@ export default function LandingPage() {
             >
               Upload Your Data
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </Link>
-            <Link
-              href="/dashboard"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-white border border-gray-200 hover:border-blue-200 hover:bg-blue-50 text-gray-700 rounded-xl font-medium text-[15px] transition-all shadow-sm"
-            >
-              <BarChart3 className="w-4 h-4 text-blue-500" />
-              View Demo Dashboard
             </Link>
           </div>
         </motion.div>

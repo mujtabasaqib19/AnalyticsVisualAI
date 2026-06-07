@@ -66,6 +66,7 @@ Our methodology is divided into four autonomous phases:
 
 - **🗣️ Natural Language to Dashboard:** Simply type what you want to see.
 - **📊 9+ Dynamic Chart Types:** Supports KPI Cards, Bar, Line, Area, Scatter, Pie, Donut, Funnel, and Data Tables.
+- **🔗 Multi-File Joins:** Upload up to 4 datasets and autonomously merge them on a shared key (inner, left, outer) prior to visualization.
 - **🎨 Theme Studio:** Switch between stunning UI themes (Ocean, Sunset, Midnight, Cyber) with dynamic CSS variable injection.
 - **🛠️ Interactive Grid:** Fully resizable, draggable, and persistent layout canvas.
 - **📄 Export & Share:** 

@@ -1,5 +1,12 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Any
+import config
+
+VALID_CHART_TYPES = {
+    "bar", "line", "area", "pie", "donut", "scatter",
+    "kpi_card", "table", "funnel", "gauge", "heatmap",
+}
+
 
 class ColumnInfo(BaseModel):
     name: str
@@ -28,16 +35,33 @@ class ValidationRequest(BaseModel):
     sample_rows: list[dict]
 
 class ValidationResult(BaseModel):
-    quality_score: int
-    issues: list[str]
-    warnings: list[str]
-    recommendation: str
+    quality_score: Optional[int] = None
+    issues: list[str] = []
+    warnings: list[str] = []
+    recommendation: str = ""
+    llm_driven: Optional[bool] = None
 
 class GenerateRequest(BaseModel):
     schema: dict
     userQuery: str
-    dashboardType: str = "auto"  # Any domain string, or "auto" for Claude to self-detect
+    dashboardType: str = "auto"
     sampleRows: Optional[list[dict]] = None
+    quality_context: Optional[dict] = None  # Gemini's ValidationResult — feeds into Claude's A2A prompt
+
+    @field_validator("userQuery")
+    @classmethod
+    def validate_user_query(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("userQuery cannot be empty")
+        if len(v) > config.MAX_QUERY_LENGTH:
+            raise ValueError(f"userQuery must be {config.MAX_QUERY_LENGTH} characters or fewer")
+        return v
+
+    @field_validator("dashboardType")
+    @classmethod
+    def validate_dashboard_type(cls, v: str) -> str:
+        return v.lower().strip() if v else "auto"
 
 class ChartPosition(BaseModel):
     x: int
@@ -49,6 +73,11 @@ class ChartSpec(BaseModel):
     id: str
     type: str
     title: str
+
+    @field_validator("type")
+    @classmethod
+    def validate_chart_type(cls, v: str) -> str:
+        return v if v in VALID_CHART_TYPES else "bar"
     x_field: Optional[str] = None
     y_field: Optional[str] = None
     value_field: Optional[str] = None

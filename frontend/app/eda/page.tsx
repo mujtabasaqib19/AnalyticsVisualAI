@@ -7,8 +7,8 @@ import Link from "next/link";
 import {
   BarChart3, ArrowRight, Sparkles, FlaskConical, Download,
   ArrowLeft, CheckCircle2, RefreshCw, ChevronRight,
-  Database, AlertTriangle, Binary, Layers, Info, XCircle, Wand2,
-  ChevronDown, ChevronUp, FileText, Zap,
+  Database, AlertTriangle, Binary, Layers, Info, XCircle,
+  FileText, Zap,
 } from "lucide-react";
 import { useDashboardStore } from "@/store/dashboardStore";
 import { useEdaStore } from "@/store/edaStore";
@@ -20,25 +20,6 @@ import { OutlierReport } from "@/components/eda/OutlierReport";
 import { EDAInsightsList } from "@/components/eda/EDAInsightsList";
 import { cn } from "@/lib/utils";
 
-// ── Domain chips (reused from upload page) ─────────────────────────────────
-const DOMAINS = [
-  { value: "auto",            label: "Auto-detect",       icon: "🧠" },
-  { value: "sales",           label: "Sales",             icon: "📈" },
-  { value: "marketing",       label: "Marketing",         icon: "📣" },
-  { value: "finance",         label: "Finance",           icon: "💰" },
-  { value: "hr",              label: "HR / People",       icon: "👥" },
-  { value: "healthcare",      label: "Healthcare",        icon: "🏥" },
-  { value: "education",       label: "Education",         icon: "🎓" },
-  { value: "e-commerce",      label: "E-Commerce",        icon: "🛒" },
-  { value: "supply-chain",    label: "Supply Chain",      icon: "🚚" },
-  { value: "operations",      label: "Operations",        icon: "⚙️" },
-  { value: "product",         label: "Product",           icon: "🧩" },
-  { value: "devops",          label: "DevOps / SRE",      icon: "🖥️" },
-  { value: "climate",         label: "Climate",           icon: "🌤️" },
-  { value: "economics",       label: "Economics",         icon: "📉" },
-  { value: "transportation",  label: "Transportation",    icon: "🚆" },
-  { value: "social-media",    label: "Social Media",      icon: "📱" },
-];
 
 type Stage = "input" | "running" | "report";
 
@@ -58,8 +39,6 @@ export default function EdaPage() {
 
   // Visualize form (shown after EDA)
   const [vizQuery,      setVizQuery]      = useState("");
-  const [vizDomain,     setVizDomain]     = useState("auto");
-  const [showMoreDomains, setShowMoreDomains] = useState(false);
 
   useEffect(() => {
     if (!parsedData) router.replace("/upload");
@@ -109,7 +88,7 @@ export default function EdaPage() {
   function proceedToDashboard() {
     setDashboardSpec(null);
     setUserQuery(vizQuery.trim() || "Give me a full overview dashboard using the cleaned data");
-    setDashboardType(vizDomain);
+    setDashboardType("auto");   // Claude always auto-detects the domain
     setStatus("idle");
     setErrorMessage(null);
     router.push("/dashboard");
@@ -125,8 +104,6 @@ export default function EdaPage() {
   }
 
   if (!parsedData) return null;
-
-  const visibleDomains = showMoreDomains ? DOMAINS : DOMAINS.slice(0, 8);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -222,10 +199,9 @@ export default function EdaPage() {
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center mx-auto mb-3 shadow-lg">
                   <FlaskConical className="w-7 h-7 text-white" />
                 </div>
-                <h1 className="text-2xl font-bold text-gray-900 mb-1.5">EDA Analysis</h1>
+                <h1 className="text-2xl font-bold text-gray-900 mb-1.5">AI-Powered EDA</h1>
                 <p className="text-gray-500 text-sm">
-                  Tell Claude what this dataset is about and what you want to understand.
-                  It will auto-clean, transform, and profile every column.
+                  Describe your dataset and Gemini will intelligently clean, classify, and profile every column before you visualize.
                 </p>
               </div>
 
@@ -239,16 +215,16 @@ export default function EdaPage() {
               {/* What EDA does */}
               <div className="bg-white border border-gray-100 rounded-2xl p-5 mb-6 shadow-sm">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5 text-blue-400" /> What EDA does automatically
+                  <Info className="w-3.5 h-3.5 text-blue-400" /> Gemini handles automatically
                 </p>
                 <div className="grid sm:grid-cols-2 gap-2 text-xs text-gray-600">
                   {[
-                    { icon: <Binary className="w-3.5 h-3.5 text-amber-500" />,   text: "Decode binary (0/1) → meaningful labels" },
-                    { icon: <Layers className="w-3.5 h-3.5 text-indigo-500" />,  text: "Group scale columns into Low/Medium/High ranges" },
-                    { icon: <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />, text: "Detect and flag outliers via IQR method" },
-                    { icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />, text: "Impute missing values (median / mode)" },
-                    { icon: <RefreshCw className="w-3.5 h-3.5 text-blue-400" />, text: "Remove duplicate rows automatically" },
-                    { icon: <Database className="w-3.5 h-3.5 text-violet-500" />, text: "Fix data types (strings → numbers / dates)" },
+                    { icon: <Binary className="w-3.5 h-3.5 text-amber-500" />,   text: "Decode binary columns with context-aware labels" },
+                    { icon: <Layers className="w-3.5 h-3.5 text-indigo-500" />,  text: "Bucket numeric ranges into meaningful groups" },
+                    { icon: <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />, text: "Detect and flag statistical outliers" },
+                    { icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />, text: "Impute missing values intelligently" },
+                    { icon: <RefreshCw className="w-3.5 h-3.5 text-blue-400" />, text: "Remove duplicate rows" },
+                    { icon: <Database className="w-3.5 h-3.5 text-violet-500" />, text: "Classify and fix column types" },
                   ].map(({ icon, text }, i) => (
                     <div key={i} className="flex items-start gap-2">{icon}<span>{text}</span></div>
                   ))}
@@ -258,17 +234,17 @@ export default function EdaPage() {
               {/* Description input */}
               <div className="mb-6">
                 <label className="text-sm font-semibold text-gray-700 mb-2 block">
-                  Describe your dataset & what you want to find
+                  Describe your dataset
                 </label>
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="e.g. This is a teen mental health survey dataset. I want to understand how social media usage relates to depression and anxiety levels, and how addiction_level varies by age group."
+                  placeholder="e.g. Sales transactions for an e-commerce store. I want to understand revenue trends, top products, and customer segments."
                   rows={4}
                   className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300 resize-none shadow-sm"
                 />
                 <p className="mt-1.5 text-xs text-gray-400">
-                  The more detail you provide, the smarter the binary label decoding and range grouping will be.
+                  Optional but recommended — helps Gemini decode binary columns and produce relevant insights.
                 </p>
               </div>
 
@@ -305,9 +281,9 @@ export default function EdaPage() {
                 <FlaskConical className="w-10 h-10 text-white" />
               </div>
               <div className="text-center">
-                <h2 className="text-xl font-bold text-gray-900 mb-2">Running EDA Analysis…</h2>
+                <h2 className="text-xl font-bold text-gray-900 mb-2">Gemini is analyzing your data…</h2>
                 <p className="text-gray-500 text-sm max-w-xs">
-                  Classifying {parsedData.columns.length} columns, imputing nulls, decoding binary fields, detecting outliers…
+                  Classifying {parsedData.columns.length} columns, building a cleaning plan, and generating insights.
                 </p>
               </div>
               <div className="flex gap-1.5 mt-2">
@@ -475,67 +451,32 @@ export default function EdaPage() {
                   </div>
                 </div>
 
-                {/* Domain chips */}
-                <div className="mb-4">
-                  <p className="text-sm font-semibold text-gray-700 mb-3">Select domain</p>
-                  <div className="flex flex-wrap gap-2">
-                    {visibleDomains.map((d) => (
-                      <button key={d.value} onClick={() => setVizDomain(d.value)}
-                        className={cn(
-                          "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium transition-all",
-                          vizDomain === d.value
-                            ? "border-blue-400 bg-blue-50 text-blue-700 shadow-sm"
-                            : "border-gray-200 bg-white text-gray-600 hover:border-blue-200"
-                        )}
-                      >
-                        <span>{d.icon}</span> {d.label}
-                        {d.value === "auto" && <span className="text-[10px] text-gray-400">(recommended)</span>}
-                      </button>
-                    ))}
-                    <button onClick={() => setShowMoreDomains(!showMoreDomains)}
-                      className="flex items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:text-gray-600 border border-dashed border-gray-200 rounded-xl transition-colors"
-                    >
-                      {showMoreDomains ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                      {showMoreDomains ? "Less" : "More"}
-                    </button>
-                  </div>
-                </div>
+
 
                 {/* Viz query */}
                 <div className="mb-5">
-                  <p className="text-sm font-semibold text-gray-700 mb-2">What do you want to see?</p>
+                  <p className="text-sm font-semibold text-gray-700 mb-2">Describe your dashboard <span className="font-normal text-gray-400">(optional)</span></p>
                   <textarea
                     value={vizQuery}
                     onChange={(e) => setVizQuery(e.target.value)}
-                    placeholder="e.g. Show how addiction level groups relate to depression rates, visualize sleep hours distribution, show anxiety by platform usage..."
+                    placeholder="e.g. Show revenue trends, compare top products, break down by region..."
                     rows={3}
                     className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-300 resize-none transition-all shadow-sm"
                   />
                   <p className="mt-1.5 text-xs text-gray-400">
-                    Claude will use the cleaned data (with decoded columns and grouped ranges) to build charts.
+                    Claude will use the Gemini-cleaned dataset to build your dashboard.
                   </p>
                 </div>
 
                 {/* CTA */}
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <button
-                    onClick={() => {
-                      const rows = edaResult?.clean_rows?.length ? edaResult.clean_rows : cleanRows;
-                      if (rows.length) downloadCleanedCSV(rows, parsedData.fileName);
-                    }}
-                    className="flex items-center justify-center gap-2 px-5 py-3.5 bg-white border border-emerald-200 hover:bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium transition-all"
-                  >
-                    <Download className="w-4 h-4" /> Download Cleaned CSV
-                  </button>
-                  <button
-                    onClick={proceedToDashboard}
-                    className="flex-1 flex items-center justify-center gap-2 px-5 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold transition-all shadow-md shadow-blue-200"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    Generate Dashboard with Claude
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
+                <button
+                  onClick={proceedToDashboard}
+                  className="w-full flex items-center justify-center gap-2 px-5 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold transition-all shadow-md shadow-blue-200"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Generate Dashboard with Claude
+                  <ArrowRight className="w-4 h-4" />
+                </button>
               </div>
 
             </motion.div>

@@ -10,6 +10,10 @@ import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import type { ChartSpec } from "@/store/dashboardStore";
 import type { DashboardTheme } from "@/app/api/theme/route";
 import { CHART_COLORS, formatNumber } from "@/lib/utils";
+import {
+  TABLE_ROW_LIMIT, BAR_CATEGORY_LIMIT, PIE_SLICE_LIMIT, SCATTER_POINT_LIMIT,
+  FUNNEL_STAGE_LIMIT, HEATMAP_ROW_LIMIT, HEATMAP_COL_LIMIT,
+} from "@/lib/constants";
 
 interface ChartRendererProps {
   spec: ChartSpec;
@@ -83,7 +87,17 @@ function computeKPI(rows: Record<string, unknown>[], field: string, aggregation:
   return 0;
 }
 
+const NO_DATA = (muted: string) => (
+  <div className="w-full h-full flex items-center justify-center text-sm" style={{ color: muted }}>
+    No data available
+  </div>
+);
+
 export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
+  const muted = theme?.cardTextMuted ?? "#9ca3af";
+
+  if (!data.length) return NO_DATA(muted);
+
   // Merge theme colours over defaults
   const chartColors = theme?.chartColors ?? CHART_COLORS;
   const gridColor   = theme?.chartGrid   ?? "#f3f4f6";
@@ -162,7 +176,7 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
             </tr>
           </thead>
           <tbody>
-            {data.slice(0, 50).map((row, i) => (
+            {data.slice(0, TABLE_ROW_LIMIT).map((row, i) => (
               <tr key={i} style={{ borderBottom: `1px solid ${borderColor}` }}>
                 {cols.map((c) => (
                   <td key={c} className="px-3 py-1.5 truncate max-w-[120px]" style={{ color: textPrimary }}>
@@ -181,17 +195,37 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
   const yField = spec.y_field || "";
   const aggregated = spec.type !== "scatter" ? aggregateData(data, xField, yField, spec.aggregation) : data;
 
+  // For bar/line/area: detect if x-axis is time-series (contains 4-digit year) —
+  // if so, keep chronological order; otherwise sort by value desc and show top N.
+  const isTimeSeries = aggregated.length > 0 && /\d{4}/.test(String(aggregated[0]?.name ?? ""));
+  const displayData = (() => {
+    if (spec.type === "bar" || spec.type === "line" || spec.type === "area") {
+      const limit = spec.top_n ?? BAR_CATEGORY_LIMIT;
+      if (isTimeSeries) {
+        // keep original chronological order, just cap to limit
+        return aggregated.slice(0, limit);
+      }
+      // sort descending by value, take top N
+      return [...aggregated].sort((a, b) => (b as {value:number}).value - (a as {value:number}).value).slice(0, limit);
+    }
+    return aggregated;
+  })();
+
   const commonAxis = {
     tick: { fill: axisColor, fontSize: 11 },
     axisLine: { stroke: gridColor },
     tickLine: false,
   };
 
-  /* ── Bar ────────────────────────────────────────── */
+  if (!aggregated.length && !["scatter", "kpi_card", "table", "gauge", "heatmap"].includes(spec.type)) {
+    return NO_DATA(muted);
+  }
+
+  /* ── Bar ───────────────────────────────────────────────────────── */
   if (spec.type === "bar") {
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={aggregated} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
+        <BarChart data={displayData} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
           <XAxis dataKey="name" {...commonAxis} />
           <YAxis {...commonAxis} tickFormatter={formatNumber} />
@@ -202,11 +236,11 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
     );
   }
 
-  /* ── Line ───────────────────────────────────────── */
+  /* ── Line ───────────────────────────────────────────────────────── */
   if (spec.type === "line") {
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={aggregated} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
+        <LineChart data={displayData} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
           <XAxis dataKey="name" {...commonAxis} />
           <YAxis {...commonAxis} tickFormatter={formatNumber} />
@@ -253,7 +287,18 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
 
   /* ── Pie / Donut ────────────────────────────────── */
   if (spec.type === "pie" || spec.type === "donut") {
-    const pieData = aggregated.slice(0, 8);
+    if (!aggregated.length) return NO_DATA(muted);
+
+    // Sort by value desc, then apply top_n (or PIE_SLICE_LIMIT as default)
+    const sorted = [...aggregated].sort((a, b) => (b as {value:number}).value - (a as {value:number}).value);
+    const limit = spec.top_n ?? PIE_SLICE_LIMIT;
+    const topSlices = sorted.slice(0, limit);
+    const rest = sorted.slice(limit);
+    const otherValue = rest.reduce((sum, d) => sum + (d as {value:number}).value, 0);
+    const pieData = otherValue > 0
+      ? [...topSlices, { name: "Other", value: Math.round(otherValue * 100) / 100 }]
+      : topSlices;
+
     const innerRadius = spec.type === "donut" ? "55%" : "0%";
     return (
       <ResponsiveContainer width="100%" height="100%">
@@ -284,6 +329,7 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
     );
   }
 
+
   /* ── Scatter ────────────────────────────────────── */
   if (spec.type === "scatter") {
     return (
@@ -294,7 +340,7 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
           <YAxis dataKey={yField} {...commonAxis} name={yField} tickFormatter={formatNumber} />
           <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3", stroke: gridColor }} />
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          <Scatter data={data.slice(0, 200) as any} fill={color} opacity={0.65} />
+          <Scatter data={data.slice(0, SCATTER_POINT_LIMIT) as any} fill={color} opacity={0.65} />
         </ScatterChart>
       </ResponsiveContainer>
     );
@@ -302,7 +348,8 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
 
   /* ── Funnel ─────────────────────────────────────── */
   if (spec.type === "funnel") {
-    const funnelData = aggregated.slice(0, 6).map((d, i) => ({
+    if (!aggregated.length) return NO_DATA(muted);
+    const funnelData = aggregated.slice(0, FUNNEL_STAGE_LIMIT).map((d, i) => ({
       ...d,
       fill: chartColors[i % chartColors.length],
     }));
@@ -318,6 +365,123 @@ export function ChartRenderer({ spec, data, theme }: ChartRendererProps) {
           </Funnel>
         </FunnelChart>
       </ResponsiveContainer>
+    );
+  }
+
+  /* ── Gauge ──────────────────────────────────────── */
+  if (spec.type === "gauge") {
+    const field = spec.value_field || spec.y_field || "";
+    const value = computeKPI(data, field, spec.aggregation);
+    const vals = data.map((r) => Number(r[field] ?? 0)).filter((v) => !isNaN(v) && v > 0);
+    const maxVal = vals.length ? Math.max(...vals) : 1;
+    const pct = Math.min(Math.max(value / maxVal, 0), 1);
+    const gaugeData = [
+      { value: pct, fill: color },
+      { value: 1 - pct, fill: gridColor },
+    ];
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center">
+        <div className="relative w-full" style={{ height: "60%" }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={gaugeData}
+                startAngle={180}
+                endAngle={0}
+                cx="50%"
+                cy="90%"
+                innerRadius="55%"
+                outerRadius="85%"
+                dataKey="value"
+                strokeWidth={0}
+              >
+                {gaugeData.map((entry, i) => (
+                  <Cell key={i} fill={entry.fill} />
+                ))}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="text-center">
+          <p className="text-3xl font-bold" style={{ color }}>{formatNumber(value)}</p>
+          <p className="text-xs mt-1" style={{ color: axisColor }}>{field}</p>
+          <p className="text-[10px] mt-0.5" style={{ color: axisColor }}>{Math.round(pct * 100)}% of max</p>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Heatmap ─────────────────────────────────── */
+  if (spec.type === "heatmap") {
+    const rowKeys = Array.from(new Set(data.map((r) => String(r[xField] ?? "")))).slice(0, HEATMAP_ROW_LIMIT);
+    const numCols = Object.keys(data[0] || {})
+      .filter((k) => k !== xField && !isNaN(Number(data[0][k])))
+      .slice(0, HEATMAP_COL_LIMIT);
+
+    if (!numCols.length) {
+      return (
+        <div className="w-full h-full flex items-center justify-center text-sm"
+          style={{ color: axisColor }}>
+          No numeric columns for heatmap
+        </div>
+      );
+    }
+
+    const cellMap: Record<string, Record<string, number>> = {};
+    const allVals: number[] = [];
+    for (const row of rowKeys) {
+      cellMap[row] = {};
+      for (const col of numCols) {
+        const rowData = data.filter((r) => String(r[xField]) === row);
+        const val = rowData.reduce((s, r) => s + Number(r[col] ?? 0), 0) / (rowData.length || 1);
+        cellMap[row][col] = val;
+        allVals.push(val);
+      }
+    }
+    const maxVal = Math.max(...allVals, 1);
+
+    const textPrimary = theme?.cardText ?? "#374151";
+    const textMuted   = theme?.cardTextMuted ?? "#9ca3af";
+
+    return (
+      <div className="w-full h-full overflow-auto p-2">
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr>
+              <th className="p-1.5" />
+              {numCols.map((c) => (
+                <th key={c} className="p-1.5 text-center font-medium truncate max-w-[80px]" style={{ color: textMuted }}>
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rowKeys.map((row) => (
+              <tr key={row}>
+                <td className="p-1.5 font-medium whitespace-nowrap" style={{ color: textPrimary }}>{row}</td>
+                {numCols.map((col) => {
+                  const val = cellMap[row][col];
+                  const intensity = val / maxVal;
+                  const alpha = Math.round(intensity * 200 + 30).toString(16).padStart(2, "0");
+                  return (
+                    <td
+                      key={col}
+                      className="p-1.5 text-center rounded"
+                      style={{
+                        backgroundColor: `${color}${alpha}`,
+                        color: intensity > 0.55 ? "#fff" : textPrimary,
+                      }}
+                    >
+                      {formatNumber(val)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 

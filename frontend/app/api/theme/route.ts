@@ -30,7 +30,7 @@ export interface DashboardTheme {
   description: string;
 }
 
-export interface GeminiThemeAudit {
+export interface ClaudeThemeAudit {
   approved: boolean;
   contrastIssues: string[];
   securityNotes: string[];
@@ -81,7 +81,7 @@ Rules:
 - Ensure chart colours are distinct and work on the cardBg.`;
 
     const claudeMsg = await anthropic.messages.create({
-      model: "claude-sonnet-4-5",
+      model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-5",
       max_tokens: 1024,
       system: claudeSystem,
       messages: [
@@ -125,7 +125,7 @@ Check:
 If any field fails, add the corrected value to "overrides".`;
 
     const auditMsg = await anthropic.messages.create({
-      model: "claude-sonnet-4-5",
+      model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-5",
       max_tokens: 1024,
       system: auditSystem,
       messages: [
@@ -138,7 +138,7 @@ If any field fails, add the corrected value to "overrides".`;
 
     const auditRaw = (auditMsg.content[0] as { type: string; text: string }).text.trim();
 
-    let audit: GeminiThemeAudit = {
+    let audit: ClaudeThemeAudit = {
       approved: true,
       contrastIssues: [],
       securityNotes: [],

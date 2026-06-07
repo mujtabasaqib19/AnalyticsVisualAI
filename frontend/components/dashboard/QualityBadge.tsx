@@ -14,9 +14,11 @@ export function QualityBadge({ validation }: QualityBadgeProps) {
   const [expanded, setExpanded] = useState(false);
   const { text, bg, border, label } = getQualityColor(validation.quality_score);
 
-  const Icon =
-    validation.quality_score >= 80 ? CheckCircle
-    : validation.quality_score >= 50 ? AlertTriangle
+  const isNull = validation.quality_score === null;
+  const Icon = isNull
+    ? AlertTriangle
+    : validation.quality_score! >= 80 ? CheckCircle
+    : validation.quality_score! >= 50 ? AlertTriangle
     : XCircle;
 
   return (
@@ -30,7 +32,7 @@ export function QualityBadge({ validation }: QualityBadgeProps) {
       >
         <Shield className="w-3.5 h-3.5" />
         Gemini: {label}
-        <span className="font-bold">{validation.quality_score}/100</span>
+        {!isNull && <span className="font-bold">{validation.quality_score}/100</span>}
         <ChevronDown className={cn("w-3 h-3 transition-transform", expanded && "rotate-180")} />
       </button>
 
@@ -39,7 +41,7 @@ export function QualityBadge({ validation }: QualityBadgeProps) {
           <div className="flex items-center gap-2 mb-3">
             <Icon className={cn("w-4 h-4", text)} />
             <span className={cn("font-semibold text-sm", text)}>
-              Data Quality: {validation.quality_score}/100
+              Data Quality: {isNull ? "Not Checked" : `${validation.quality_score}/100`}
             </span>
           </div>
 

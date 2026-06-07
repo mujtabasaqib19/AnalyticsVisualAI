@@ -5,9 +5,9 @@ import { Loader2, CheckCircle, XCircle, Database, Sparkles, Shield } from "lucid
 import type { GenerationStatus } from "@/store/dashboardStore";
 
 const STEPS = [
-  { key: "parsing", icon: Database, label: "Parsing your data...", color: "text-blue-600" },
-  { key: "validating", icon: Shield, label: "Gemini validating data quality...", color: "text-violet-600" },
-  { key: "generating", icon: Sparkles, label: "Claude generating dashboard...", color: "text-amber-600" },
+  { key: "parsing", icon: Database, label: "Reading your data...", color: "text-blue-600" },
+  { key: "validating", icon: Shield, label: "Gemini checking data quality...", color: "text-violet-600" },
+  { key: "generating", icon: Sparkles, label: "Claude building your dashboard...", color: "text-amber-600" },
 ] as const;
 
 interface GenerationStatusProps {

@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Palette } from "lucide-react";
+import { X, Palette, SlidersHorizontal } from "lucide-react";
 import { useDashboardStore } from "@/store/dashboardStore";
 import type { ChartType } from "@/store/dashboardStore";
 import { CHART_COLORS } from "@/lib/utils";
@@ -24,6 +24,8 @@ const CHART_TYPES: { value: ChartType; label: string; icon: string }[] = [
 ];
 
 const AGGREGATIONS = ["sum", "avg", "count", "max", "min"] as const;
+const TOP_N_PRESETS = [5, 10, 15, 20] as const;
+const TOP_N_SUPPORTED: ChartType[] = ["bar", "pie", "donut"];
 
 function fmt(field: string): string {
   return field.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -183,6 +185,59 @@ export function ChartSettingsPanel({ chartId, onClose }: ChartSettingsPanelProps
             ))}
           </div>
         </div>
+
+        {/* Top N — only for bar, pie, donut */}
+        {TOP_N_SUPPORTED.includes(chart.type) && (
+          <div>
+            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5 block">
+              <SlidersHorizontal className="w-3.5 h-3.5" /> Top N
+            </label>
+            <div className="flex gap-1.5 flex-wrap mb-2">
+              {TOP_N_PRESETS.map((n) => (
+                <button
+                  key={n}
+                  onClick={() => updateChart(chartId, { top_n: n })}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg border text-xs transition-all font-medium",
+                    chart.top_n === n
+                      ? "border-blue-300 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white hover:border-blue-200 text-gray-500"
+                  )}
+                >
+                  {n}
+                </button>
+              ))}
+              <button
+                onClick={() => updateChart(chartId, { top_n: undefined })}
+                className={cn(
+                  "px-2.5 py-1 rounded-lg border text-xs transition-all font-medium",
+                  chart.top_n === undefined
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-gray-200 bg-white hover:border-blue-200 text-gray-500"
+                )}
+              >
+                All
+              </button>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={chart.top_n ?? ""}
+              placeholder={"Default (20)"}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                updateChart(chartId, { top_n: isNaN(v) || v < 1 ? undefined : v });
+              }}
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-300 transition-all"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">
+              {chart.type === "bar"
+                ? "Shows the top N categories sorted by value"
+                : "Shows the top N slices (remaining grouped as Other)"}
+            </p>
+          </div>
+        )}
 
         {/* Color palette */}
         <div>

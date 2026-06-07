@@ -9,6 +9,7 @@ import {
 import { useDashboardStore } from "@/store/dashboardStore";
 import { trackEvent } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
+import { API_URL, DASHBOARD_SAMPLE_ROWS, SHARE_ROWS_LIMIT } from "@/lib/constants";
 
 interface ExportPanelProps {
   onClose: () => void;
@@ -87,7 +88,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
     if (!dashboardSpec || !parsedData) return;
     setReportLoading(true);
     try {
-      const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const API = API_URL;
       const schema = {
         columns: parsedData.columns,
         row_count: parsedData.rowCount,
@@ -100,7 +101,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
         body: JSON.stringify({
           dashboard_spec: dashboardSpec,
           schema,
-          sample_rows: parsedData.rows.slice(0, 10),
+          sample_rows: parsedData.rows.slice(0, DASHBOARD_SAMPLE_ROWS),
           quality: validation ?? undefined,
         }),
       });
@@ -171,7 +172,7 @@ export function ExportPanel({ onClose }: ExportPanelProps) {
     if (!dashboardSpec) return;
     setShareLoading(true);
     try {
-      const rows = parsedData?.rows?.slice(0, 200) ?? [];
+      const rows = parsedData?.rows?.slice(0, SHARE_ROWS_LIMIT) ?? [];
       const res = await fetch("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

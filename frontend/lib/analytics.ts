@@ -39,7 +39,8 @@ export interface UsageSummary {
   totalDashboards: number;
   totalFollowUps: number;
   chartTypeCounts: Record<string, number>;
-  topQuery: string;
+  /** Most recently used query (not most frequent) */
+  lastQuery: string;
   feedbackPositive: number;
   feedbackNegative: number;
 }
@@ -69,13 +70,13 @@ export function getUsageSummary(): UsageSummary {
     }
   }
 
-  const topQuery = queries[queries.length - 1] ?? "";
+  const lastQuery = queries[queries.length - 1] ?? "";
 
   return {
     totalDashboards: dashboards,
     totalFollowUps: followUps,
     chartTypeCounts: chartCounts,
-    topQuery,
+    lastQuery,
     feedbackPositive: positive,
     feedbackNegative: negative,
   };

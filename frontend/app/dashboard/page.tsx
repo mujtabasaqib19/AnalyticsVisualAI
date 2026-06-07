@@ -13,9 +13,9 @@ import {
   Database, Palette, PanelLeftClose, PanelLeftOpen, X,
 } from "lucide-react";
 import Link from "next/link";
-import { useDashboardStore } from "@/store/dashboardStore";
+import { useDashboardStore, type DashboardSpec } from "@/store/dashboardStore";
+import { GRID_COLS, GRID_ROW_HEIGHT_PX, GRID_MARGIN, DASHBOARD_SAMPLE_ROWS } from "@/lib/constants";
 import { generateDashboard } from "@/lib/claude";
-import { validateData } from "@/lib/gemini";
 import { ChartCard } from "@/components/dashboard/ChartCard";
 import { QualityBadge } from "@/components/dashboard/QualityBadge";
 import { ChartSettingsPanel } from "@/components/editor/ChartSettingsPanel";
@@ -23,20 +23,10 @@ import { GenerationStatusOverlay } from "@/components/dashboard/GenerationStatus
 import { ThemePanel } from "@/components/dashboard/ThemePanel";
 import { ExportPanel } from "@/components/dashboard/ExportPanel";
 import { FeedbackButton } from "@/components/dashboard/FeedbackButton";
-import { OnboardingTour, TourHelpButton } from "@/components/dashboard/OnboardingTour";
+import { TourHelpButton } from "@/components/dashboard/OnboardingTour";
 import { trackEvent } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
-const UNIVERSAL_SUGGESTIONS = [
-  "Add a trend line chart over time",
-  "Show top 10 values as a bar chart",
-  "Add a KPI card for the primary metric",
-  "Compare two metrics with a scatter plot",
-  "Show distribution as a donut chart",
-  "Show outliers and anomalies",
-  "Add a data table for detailed breakdown",
-  "Show percentage breakdown by category",
-];
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -48,6 +38,8 @@ export default function DashboardPage() {
   const [followUpError, setFollowUpError]         = useState<string | null>(null);
   const [showThemePanel, setShowThemePanel]      = useState(false);
   const [showExportPanel, setShowExportPanel]    = useState(false);
+  const [qualityWarning, setQualityWarning]      = useState<{ score: number; issues: string[] } | null>(null);
+  const [pendingSpec, setPendingSpec]            = useState<DashboardSpec | null>(null);
   const [sidebarOpen, setSidebarOpen]            = useState(true);   // collapsible sidebar
   const [mobileMenuOpen, setMobileMenuOpen]      = useState(false);  // mobile drawer
 
@@ -63,7 +55,7 @@ export default function DashboardPage() {
   }, []);
 
   const {
-    parsedData, dashboardSpec, validation, status, errorMessage,
+    parsedData, parsedDataArray, dashboardSpec, validation, status, errorMessage,
     userQuery, dashboardType,
     setDashboardSpec, setValidation, setStatus, setErrorMessage,
     updateChartPosition, selectedChartId, setSelectedChartId, activeTheme,
@@ -106,32 +98,38 @@ export default function DashboardPage() {
     if (!dashboardSpec && status === "idle" && userQuery) runGeneration();
   }, [isHydrated]); // eslint-disable-line
 
+  function buildFiles() {
+    const source = parsedDataArray.length > 0 ? parsedDataArray : (parsedData ? [parsedData] : []);
+    return source.map((f) => ({
+      fileName: f.fileName,
+      schema: {
+        columns:              f.columns,
+        row_count:            f.rowCount,
+        suggested_metrics:    f.columns.filter((c) => c.type === "numeric").map((c) => c.name),
+        suggested_dimensions: f.columns.filter((c) => c.type === "string").map((c) => c.name),
+      },
+      rows: f.rows as object[],
+    }));
+  }
+
   async function runGeneration() {
     if (!parsedData || !userQuery) return;
     setStatus("parsing");
     setErrorMessage(null);
-    const schema = {
-      columns: parsedData.columns,
-      row_count: parsedData.rowCount,
-      suggested_metrics:    parsedData.columns.filter((c) => c.type === "numeric").map((c) => c.name),
-      suggested_dimensions: parsedData.columns.filter((c) => c.type === "string").map((c) => c.name),
-    };
-    const sampleRows = parsedData.rows.slice(0, 10) as object[];
+    setValidation(null);
+    const files = buildFiles();
     try {
-      setStatus("validating");
-      const [spec, geminiResult] = await Promise.all([
-        (async () => { setStatus("generating"); return generateDashboard({ schema, userQuery, dashboardType, sampleRows }); })(),
-        validateData(schema, sampleRows).catch(() => ({
-          quality_score: 70, issues: [], warnings: ["Gemini validation unavailable"], recommendation: "",
-        })),
-      ]);
-      setValidation(geminiResult);
-      if (geminiResult.quality_score < 50) {
-        const proceed = window.confirm(
-          `Gemini detected poor data quality (${geminiResult.quality_score}/100):\n\n` +
-          geminiResult.issues.join("\n") + "\n\nProceed anyway?"
-        );
-        if (!proceed) { setStatus("idle"); return; }
+      setStatus("generating");
+      const { spec, quality, mergedData } = await generateDashboard({ files, userQuery, dashboardType });
+      if (mergedData) {
+        useDashboardStore.getState().setParsedData(mergedData);
+      }
+      if (quality) setValidation(quality);
+      if (quality?.quality_score !== null && quality?.quality_score !== undefined && quality.quality_score < 50) {
+        setPendingSpec(spec);
+        setQualityWarning({ score: quality.quality_score, issues: quality.issues });
+        setStatus("idle");
+        return;
       }
       setDashboardSpec(spec);
       setStatus("ready");
@@ -142,25 +140,39 @@ export default function DashboardPage() {
     }
   }
 
+  function handleQualityProceed() {
+    if (!pendingSpec) return;
+    setDashboardSpec(pendingSpec);
+    setStatus("ready");
+    trackEvent("dashboard_generated", { query: userQuery, domain: dashboardType, charts: pendingSpec.charts.length });
+    setQualityWarning(null);
+    setPendingSpec(null);
+  }
+
+  function handleQualityCancel() {
+    setQualityWarning(null);
+    setPendingSpec(null);
+    setStatus("idle");
+  }
+
   async function handleFollowUp() {
     if (!followUpQuery.trim() || !parsedData) return;
     setIsFollowUpLoading(true);
     setFollowUpError(null);
     try {
-      const schema = {
-        columns: parsedData.columns,
-        row_count: parsedData.rowCount,
-        suggested_metrics:    parsedData.columns.filter((c) => c.type === "numeric").map((c) => c.name),
-        suggested_dimensions: parsedData.columns.filter((c) => c.type === "string").map((c) => c.name),
-      };
-      const newSpec = await generateDashboard({
-        schema, userQuery: followUpQuery, dashboardType,
-        sampleRows: parsedData.rows.slice(0, 10) as object[],
+      const { spec: newSpec, mergedData } = await generateDashboard({
+        files: buildFiles(), userQuery: followUpQuery, dashboardType,
       });
+      if (mergedData) {
+        useDashboardStore.getState().setParsedData(mergedData);
+      }
       if (dashboardSpec) {
-        const existingIds = new Set(dashboardSpec.charts.map((c) => c.id));
-        const newCharts = newSpec.charts.filter((c) => !existingIds.has(c.id));
-        setDashboardSpec({ ...dashboardSpec, charts: [...dashboardSpec.charts, ...newCharts] });
+        const merged = [...dashboardSpec.charts];
+        for (const chart of newSpec.charts) {
+          const idx = merged.findIndex((c) => c.id === chart.id);
+          if (idx >= 0) merged[idx] = chart; else merged.push(chart);
+        }
+        setDashboardSpec({ ...dashboardSpec, charts: merged });
       } else {
         setDashboardSpec(newSpec);
       }
@@ -179,6 +191,7 @@ export default function DashboardPage() {
     // Group by y (same y = same grid row)
     const rows = new Map<number, any[]>();
     for (const c of charts) {
+      if (!c.position) continue;
       if (!rows.has(c.position.y)) rows.set(c.position.y, []);
       rows.get(c.position.y)!.push({ ...c, position: { ...c.position } });
     }
@@ -243,7 +256,7 @@ export default function DashboardPage() {
     }
     setLayoutPositions((prev) => ({ ...prev, ...updated }));
   };
-  const rowHeight = 56;
+  const rowHeight = GRID_ROW_HEIGHT_PX;
 
   // ── Loading skeleton ───────────────────────────────────────────────────────
   if (!isHydrated) {
@@ -301,34 +314,22 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Suggestions */}
-      <div className="p-3 border-b border-gray-100">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Suggestions</p>
-        <div className="space-y-0.5">
-          {UNIVERSAL_SUGGESTIONS.map((s) => (
-            <button
-              key={s}
-              onClick={() => { setFollowUpQuery(s); setMobileMenuOpen(false); }}
-              className="w-full text-left text-xs p-2 rounded-lg hover:bg-blue-50 text-gray-500 hover:text-blue-700 transition-all flex items-start gap-1.5 group"
-            >
-              <ChevronRight className="w-3 h-3 mt-0.5 text-blue-400 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Claude Insights */}
+      {/* Suggestions — powered by Claude's suggested_insights */}
       {dashboardSpec?.suggested_insights && dashboardSpec.suggested_insights.length > 0 && (
         <div className="p-3 border-b border-gray-100">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3 text-amber-500" /> Claude Insights
+            <Sparkles className="w-3 h-3 text-amber-500" /> Claude Suggestions
           </p>
-          <div className="space-y-2">
+          <div className="space-y-0.5">
             {dashboardSpec.suggested_insights.map((insight, i) => (
-              <p key={i} className="text-xs text-gray-600 bg-amber-50 border border-amber-100 rounded-lg p-2 leading-relaxed">
+              <button
+                key={i}
+                onClick={() => { setFollowUpQuery(insight); setMobileMenuOpen(false); }}
+                className="w-full text-left text-xs p-2 rounded-lg hover:bg-amber-50 text-gray-500 hover:text-amber-700 transition-all flex items-start gap-1.5 group"
+              >
+                <ChevronRight className="w-3 h-3 mt-0.5 text-amber-400 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                 {insight}
-              </p>
+              </button>
             ))}
           </div>
         </div>
@@ -398,9 +399,6 @@ export default function DashboardPage() {
         {/* Right: action buttons */}
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {validation && <div className="hidden sm:block"><QualityBadge validation={validation} /></div>}
-
-          {/* Help / tour */}
-          <TourHelpButton />
 
           {/* Theme button */}
           <button
@@ -498,11 +496,11 @@ export default function DashboardPage() {
               <ResponsiveGridLayout
               className="layout"
               layout={layout}
-              cols={12}
+              cols={GRID_COLS}
               rowHeight={rowHeight}
               onLayoutChange={handleLayoutChange}
               draggableHandle=".cursor-grab"
-              margin={[8, 8]}
+              margin={GRID_MARGIN}
               compactType={null}
               preventCollision={false}
               resizeHandles={["se", "sw", "ne", "nw"]}
@@ -608,9 +606,55 @@ export default function DashboardPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Global Phase 5 features ──────────────────────────────────────────── */}
-      <OnboardingTour />
+      {/* ── Fixed overlays ──────────────────────────────────────────────────── */}
       <FeedbackButton />
+      <div className="fixed bottom-5 left-5 z-50">
+        <TourHelpButton />
+      </div>
+
+      {/* ── Quality warning modal ────────────────────────────────────────────── */}
+      {qualityWarning && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Poor Data Quality Detected</p>
+                <p className="text-sm text-gray-500">Gemini score: {qualityWarning.score}/100</p>
+              </div>
+            </div>
+            {qualityWarning.issues.length > 0 && (
+              <ul className="mb-4 space-y-1.5 max-h-40 overflow-y-auto">
+                {qualityWarning.issues.map((issue, i) => (
+                  <li key={i} className="text-sm text-gray-600 flex items-start gap-2 bg-red-50 rounded-lg p-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 shrink-0" />
+                    {issue}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-gray-400 mb-5">
+              Low quality data may produce inaccurate charts. Proceed anyway or cancel to fix the data first.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleQualityCancel}
+                className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleQualityProceed}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold transition-colors"
+              >
+                Proceed Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

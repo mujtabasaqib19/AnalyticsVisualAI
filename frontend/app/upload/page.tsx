@@ -6,8 +6,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, X, CheckCircle, ArrowRight, BarChart3, Sparkles,
-  AlertCircle, Wand2, ChevronDown, ChevronUp, FileText,
-  FlaskConical, Zap,
+  AlertCircle, FileText, FlaskConical, Zap,
 } from "lucide-react";
 import { parseFile } from "@/lib/parser";
 import { useDashboardStore } from "@/store/dashboardStore";
@@ -24,82 +23,6 @@ const ACCEPTED_TYPES: Record<string, string[]> = {
   "application/json":                                                               [".json"],
 };
 
-const DOMAIN_GROUPS = [
-  {
-    label: "Business & Commerce",
-    domains: [
-      { value: "sales",            label: "Sales",            icon: "📈" },
-      { value: "marketing",        label: "Marketing",        icon: "📣" },
-      { value: "finance",          label: "Finance",          icon: "💰" },
-      { value: "e-commerce",       label: "E-Commerce",       icon: "🛒" },
-      { value: "supply-chain",     label: "Supply Chain",     icon: "🚚" },
-      { value: "customer-support", label: "Customer Support", icon: "💬" },
-      { value: "operations",       label: "Operations",       icon: "⚙️" },
-      { value: "real-estate",      label: "Real Estate",      icon: "🏠" },
-    ],
-  },
-  {
-    label: "People & Organizations",
-    domains: [
-      { value: "hr",           label: "HR / People",  icon: "👥" },
-      { value: "education",    label: "Education",    icon: "🎓" },
-      { value: "healthcare",   label: "Healthcare",   icon: "🏥" },
-      { value: "demographics", label: "Demographics", icon: "🌍" },
-      { value: "sports",       label: "Sports",       icon: "⚽" },
-    ],
-  },
-  {
-    label: "Technology & Engineering",
-    domains: [
-      { value: "product",     label: "Product",       icon: "🧩" },
-      { value: "engineering", label: "Engineering",   icon: "🔧" },
-      { value: "devops",      label: "DevOps / SRE",  icon: "🖥️" },
-      { value: "iot",         label: "IoT / Sensors", icon: "📡" },
-    ],
-  },
-  {
-    label: "Science & Research",
-    domains: [
-      { value: "climate",    label: "Climate / Weather", icon: "🌤️" },
-      { value: "economics",  label: "Economics",         icon: "📉" },
-      { value: "agriculture",label: "Agriculture",       icon: "🌾" },
-      { value: "energy",     label: "Energy",            icon: "⚡" },
-    ],
-  },
-  {
-    label: "Government & Society",
-    domains: [
-      { value: "crime",          label: "Crime / Safety", icon: "🚔" },
-      { value: "transportation", label: "Transportation", icon: "🚆" },
-      { value: "social-media",   label: "Social Media",   icon: "📱" },
-    ],
-  },
-  {
-    label: "Other Industries",
-    domains: [
-      { value: "food-beverage", label: "Food & Beverage",     icon: "🍽️" },
-      { value: "travel",        label: "Travel / Hospitality", icon: "✈️" },
-      { value: "legal",         label: "Legal / Compliance",   icon: "⚖️" },
-    ],
-  },
-] as const;
-
-const QUERY_EXAMPLES: Record<string, string[]> = {
-  auto:          ["Give me a full overview dashboard", "Show the top metrics with trend lines", "Break down the data by category"],
-  sales:         ["Show monthly revenue by region", "Compare top 5 products by revenue", "Show sales rep performance vs quota"],
-  hr:            ["Show headcount by department with attrition trend", "Display hiring pipeline funnel", "Show monthly hiring vs departures"],
-  finance:       ["Show budget vs actuals by department", "Display P&L trend over time", "Break down expenses by category"],
-  healthcare:    ["Show patient outcomes by treatment type", "Display admission rates over time", "Compare readmission rates"],
-  education:     ["Show student performance by subject", "Compare pass rates across departments", "Display enrollment trends"],
-  "e-commerce":  ["Show revenue by product category", "Display conversion funnel", "Show top 10 products by units sold"],
-  climate:       ["Show temperature trend over time", "Compare rainfall by region", "Display CO2 levels"],
-  default:       ["Give me a complete overview dashboard", "Show distributions and key metrics", "Display trends over time"],
-};
-
-function getExamples(domain: string) {
-  return QUERY_EXAMPLES[domain] ?? QUERY_EXAMPLES.default;
-}
-
 export default function UploadPage() {
   const router = useRouter();
   const { addParsedData, removeFileByIndex, setSelectedFileIndex,
@@ -112,14 +35,11 @@ export default function UploadPage() {
 
   const [parseError,     setParseError]     = useState<string | null>(null);
   const [isParsing,      setIsParsing]      = useState(false);
-  // "none" = no file yet, "choose" = file ready, choose path, "visualize" = show viz form
+  // "none" = no file yet, "choose" = file ready choose path, "visualize" = show viz form
   const [mode, setMode] = useState<"none" | "choose" | "visualize">("none");
 
   // Visualize form state
-  const [query,          setQuery]          = useState("");
-  const [selectedDomain, setSelectedDomain] = useState("auto");
-  const [customDomain,   setCustomDomain]   = useState("");
-  const [showAllDomains, setShowAllDomains] = useState(false);
+  const [query, setQuery] = useState("");
 
   // ── File drop ─────────────────────────────────────────────────────────────
   const onDrop = useCallback(async (accepted: File[]) => {
@@ -146,11 +66,6 @@ export default function UploadPage() {
     maxSize: 2 * 1024 * 1024 * 1024,
   });
 
-  const effectiveDomain =
-    selectedDomain === "custom" && customDomain.trim()
-      ? customDomain.trim().toLowerCase()
-      : selectedDomain;
-
   // ── Go to EDA ─────────────────────────────────────────────────────────────
   const handleGoEda = () => {
     if (!parsedData) return;
@@ -163,13 +78,11 @@ export default function UploadPage() {
   const handleVisualize = () => {
     if (!parsedData) return;
     setUserQuery(query.trim() || "Give me a full overview dashboard of this dataset");
-    setDashboardType(effectiveDomain);
+    setDashboardType("auto");   // always auto — Claude infers domain from data
     setStatus("idle");
     setErrorMessage(null);
     router.push("/dashboard");
   };
-
-  const visibleGroups = showAllDomains ? DOMAIN_GROUPS : DOMAIN_GROUPS.slice(0, 2);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -194,7 +107,7 @@ export default function UploadPage() {
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
           <h1 className="text-4xl font-normal text-gray-900 mb-2">Upload Your Data</h1>
           <p className="text-gray-400 text-lg font-light">
-            CSV, Excel, or JSON — any domain, any size
+            CSV, Excel, or JSON — Claude auto-detects your domain and builds the dashboard
           </p>
         </motion.div>
 
@@ -343,7 +256,7 @@ export default function UploadPage() {
                   <div>
                     <p className="font-bold text-white text-base mb-1">Do EDA First</p>
                     <p className="text-indigo-100 text-sm leading-relaxed">
-                      Auto-clean data, decode binary columns, group scale fields, detect outliers, then visualize with a cleaned dataset.
+                      AI-powered cleaning — Gemini classifies every column, decodes binary fields, groups scale columns, and detects outliers before visualization.
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 text-white text-sm font-medium mt-auto group-hover:gap-2.5 transition-all">
@@ -390,84 +303,10 @@ export default function UploadPage() {
             >
               <div className="space-y-5 pt-2">
 
-                {/* Domain */}
-                <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-semibold flex items-center justify-center">2</div>
-                    <p className="text-sm font-semibold text-gray-700">Select domain</p>
-                    <span className="text-xs text-gray-400 ml-1">
-                      {selectedDomain === "auto" ? "— Claude will auto-detect" : `• ${effectiveDomain}`}
-                    </span>
-                  </div>
-
-                  {/* Auto-detect */}
-                  <button onClick={() => setSelectedDomain("auto")}
-                    className={cn(
-                      "w-full flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all mb-3",
-                      selectedDomain === "auto" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-white hover:border-blue-200 text-gray-600"
-                    )}
-                  >
-                    <Wand2 className="w-4 h-4 shrink-0" />
-                    <span>Auto-detect</span>
-                    <span className="text-xs text-gray-400 ml-1">— infer domain from column names & data</span>
-                    {selectedDomain === "auto" && <span className="ml-auto text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">Active</span>}
-                  </button>
-
-                  {/* Domain groups */}
-                  <div className="space-y-3">
-                    {visibleGroups.map((group) => (
-                      <div key={group.label}>
-                        <p className="text-xs text-gray-400 mb-1.5 px-0.5">{group.label}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {group.domains.map((d) => (
-                            <button key={d.value} onClick={() => setSelectedDomain(d.value)}
-                              className={cn(
-                                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all",
-                                selectedDomain === d.value ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-white hover:border-blue-200 text-gray-600"
-                              )}
-                            >
-                              <span>{d.icon}</span> {d.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <button onClick={() => setShowAllDomains(!showAllDomains)}
-                    className="mt-3 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    {showAllDomains ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                    {showAllDomains ? "Show fewer" : `Show ${DOMAIN_GROUPS.slice(2).reduce((a, g) => a + g.domains.length, 0)} more domains`}
-                  </button>
-
-                  {/* Custom domain */}
-                  <div className="mt-3">
-                    <button onClick={() => setSelectedDomain("custom")}
-                      className={cn(
-                        "w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-xs transition-all",
-                        selectedDomain === "custom" ? "border-violet-300 bg-violet-50 text-violet-700" : "border-dashed border-gray-200 bg-white text-gray-400 hover:border-violet-200 hover:text-violet-600"
-                      )}
-                    >
-                      <span>✏️</span> <span>Custom domain…</span>
-                    </button>
-                    <AnimatePresence>
-                      {selectedDomain === "custom" && (
-                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-                          <input autoFocus value={customDomain} onChange={(e) => setCustomDomain(e.target.value)}
-                            placeholder="e.g. Pharmaceutical trials, Airline operations…"
-                            className="mt-2 w-full bg-white border border-violet-300 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-violet-300"
-                          />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                </div>
-
                 {/* Query */}
                 <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
                   <div className="flex items-center gap-2 mb-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-semibold flex items-center justify-center">3</div>
+                    <div className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-semibold flex items-center justify-center">2</div>
                     <p className="text-sm font-semibold text-gray-700">Describe your dashboard</p>
                     <span className="text-xs text-gray-400">(optional)</span>
                   </div>
@@ -478,13 +317,9 @@ export default function UploadPage() {
                     rows={3}
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-300 resize-none transition-all"
                   />
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {getExamples(effectiveDomain).map((q) => (
-                      <button key={q} onClick={() => setQuery(q)}
-                        className="text-xs px-2.5 py-1 rounded-lg border border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50 text-gray-500 hover:text-blue-700 transition-all"
-                      >{q}</button>
-                    ))}
-                  </div>
+                  <p className="mt-2 text-xs text-gray-400">
+                    Claude will auto-detect the domain from your column names and data — no need to select it manually.
+                  </p>
                 </div>
 
                 {/* Generate button */}
@@ -493,7 +328,7 @@ export default function UploadPage() {
                   className="w-full py-4 rounded-xl font-semibold text-[15px] flex items-center justify-center gap-2 transition-all shadow-md bg-blue-600 hover:bg-blue-700 text-white"
                 >
                   <Sparkles className="w-5 h-5" />
-                  Generate Dashboard with Claude + Gemini
+                  Generate Dashboard with Claude
                   <ArrowRight className="w-5 h-5" />
                 </button>
               </div>

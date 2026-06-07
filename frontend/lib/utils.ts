@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { QUALITY_GOOD, QUALITY_MODERATE } from "@/lib/constants";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -11,10 +12,11 @@ export function formatNumber(value: number): string {
   return value.toLocaleString();
 }
 
-export function getQualityColor(score: number) {
-  if (score >= 80) return { text: "text-emerald-700", bg: "bg-emerald-50", border: "border-emerald-200", label: "High Quality" };
-  if (score >= 50) return { text: "text-amber-700", bg: "bg-amber-50", border: "border-amber-200", label: "Moderate Issues" };
-  return { text: "text-red-700", bg: "bg-red-50", border: "border-red-200", label: "Poor Quality" };
+export function getQualityColor(score: number | null) {
+  if (score === null)            return { text: "text-gray-500",    bg: "bg-gray-100",   border: "border-gray-200",    label: "Not Checked" };
+  if (score >= QUALITY_GOOD)     return { text: "text-emerald-700", bg: "bg-emerald-50", border: "border-emerald-200", label: "High Quality" };
+  if (score >= QUALITY_MODERATE) return { text: "text-amber-700",   bg: "bg-amber-50",   border: "border-amber-200",   label: "Moderate Issues" };
+  return                                { text: "text-red-700",     bg: "bg-red-50",     border: "border-red-200",     label: "Poor Quality" };
 }
 
 export const CHART_COLORS = [

@@ -26,6 +26,8 @@ export interface ColumnProfile {
   range_buckets: Record<string, string>;
   recommended_chart: string;
   has_outliers: boolean;
+  /** LLM reasoning for the classification and transformation decisions */
+  llm_reasoning?: string;
 }
 
 export interface BinaryDecoding {

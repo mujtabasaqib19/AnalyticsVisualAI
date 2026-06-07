@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from services.parser import parse_uploaded_file
+import config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -7,21 +8,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {
-    # Delimited text
     "csv", "tsv", "txt",
-    # Excel family
     "xlsx", "xls", "xlsm", "xlsb",
-    # OpenDocument
     "ods",
-    # Structured / semi-structured
     "json", "xml",
-    # Columnar (pandas handles natively)
     "parquet", "feather",
 }
-
-# 50 MB — practical ceiling for a browser-based analytics tool.
-# Reject before reading into memory to avoid buffering huge files.
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
 @router.post("/upload")
@@ -32,10 +24,10 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
 
     # Reject early using Content-Length if provided by the client
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_FILE_SIZE_BYTES:
+    if content_length and int(content_length) > config.MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             413,
-            f"File too large. Maximum allowed size is {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB.",
+            f"File too large. Maximum allowed size is {config.MAX_FILE_SIZE_MB} MB.",
         )
 
     # Stream-read with a running byte counter so we never buffer more than the limit
@@ -47,10 +39,10 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         if not chunk:
             break
         total_bytes += len(chunk)
-        if total_bytes > MAX_FILE_SIZE_BYTES:
+        if total_bytes > config.MAX_FILE_SIZE_BYTES:
             raise HTTPException(
                 413,
-                f"File too large. Maximum allowed size is {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB.",
+                f"File too large. Maximum allowed size is {config.MAX_FILE_SIZE_MB} MB.",
             )
         chunks.append(chunk)
 
